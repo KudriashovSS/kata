@@ -32,16 +32,18 @@
   .slice:hover { background: var(--panel); }
   .slice.on { background: var(--panel-2); color: var(--text); }
   .slice .n { margin-left: auto; font-size: 12px; color: var(--muted); }
+  .slice .n.undec { color: var(--warn); }
   .sep { margin: 14px 4px 6px; font-size: 11px; letter-spacing: 1px; color: var(--muted); text-transform: uppercase; }
   /* ── контент ── */
   main { padding: 28px 32px 120px; max-width: 980px; }
   .diagram { background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
-             padding: 18px; margin-bottom: 22px; overflow-x: auto; }
+             padding: 18px; margin-bottom: 22px; overflow: auto; max-height: 62vh; }
   .diagram pre { margin: 0; color: var(--muted); font-size: 13px; }
   .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
           padding: 16px 18px; margin-bottom: 12px; }
   .card.approved { border-color: var(--ok); }
   .card.rejected { border-color: var(--hot); opacity: .75; }
+  .card.attention { border-color: var(--warn); box-shadow: 0 0 0 1px var(--warn); }
   .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .chip { font-size: 11px; padding: 2px 9px; border-radius: 20px; border: 1px solid var(--border); color: var(--muted); }
   .chip.type { color: var(--accent); border-color: var(--accent); }
@@ -51,6 +53,9 @@
   .evidence { display: flex; gap: 8px; flex-wrap: wrap; }
   .ev { font-size: 12.5px; font-family: ui-monospace, monospace; color: var(--accent);
         background: rgba(110,168,254,.08); padding: 3px 8px; border-radius: 6px; }
+  .notes { margin-top: 10px; display: grid; gap: 6px; }
+  .note { font-size: 13.5px; color: var(--warn); background: rgba(229,192,123,.08);
+          border-left: 2px solid var(--warn); padding: 6px 10px; border-radius: 0 8px 8px 0; }
   .actions { display: flex; gap: 8px; margin-top: 12px; align-items: center; }
   .btn { background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
          font: 13px inherit; padding: 6px 14px; border-radius: 8px; cursor: pointer; }
@@ -67,8 +72,10 @@
   .bar-in { max-width: 980px; padding: 14px 32px; display: flex; align-items: center; gap: 18px; }
   .stat { color: var(--muted); font-size: 13.5px; }
   .stat b.a { color: var(--ok); } .stat b.r { color: var(--hot); } .stat b.c { color: var(--warn); }
+  .stat b.u { color: var(--warn); cursor: pointer; text-decoration: underline dotted; }
   .export { margin-left: auto; background: var(--accent); color: #0f1115; border: 0;
             border-radius: 9px; padding: 10px 22px; font: 600 15px inherit; cursor: pointer; }
+  .export.armed { background: var(--warn); }
 </style>
 </head>
 <body>
@@ -89,40 +96,47 @@
 </div></div>
 
 <script>
-/* Агент при генерации страницы заменяет DATA на реально извлечённые срезы, факты и
-   mermaid-исходники диаграмм. Ниже — демонстрационные данные. */
-const DATA = {
+/* Данные агент кладёт рядом в facts.json — НЕ подстановкой в HTML (шаблонная подстановка
+   ломает страницу молча: съеденные \n в mermaid и т.п.). Формат facts.json = объект DEMO_DATA.
+   Без facts.json страница показывает демо-данные. */
+const DEMO_DATA = {
   slices: [
     { id: "event-graph", name: "Граф событий",
       diagram: "flowchart LR\n  Orders -- produces --> E([order.created])\n  E --> Billing\n  E --> Notifications\n  E --> Analytics" },
     { id: "gotchas", name: "Грабли", diagram: null },
   ],
   facts: [
-    { id: "fact:0001", type: "event-graph", confidence: "high", status: "candidate",
+    { id: "fact:eg-0001", type: "event-graph", confidence: "high", status: "candidate",
       statement: "Orders публикует order.created при успешном создании заказа",
       evidence: ["internal/orders/service.go:87", "commit abc1234"] },
-    { id: "fact:0002", type: "event-graph", confidence: "medium", status: "candidate",
+    { id: "fact:eg-0002", type: "event-graph", confidence: "medium", status: "candidate",
       statement: "Analytics консюмит order.created, но обработчик выглядит отключённым (закомментирован роутинг)",
-      evidence: ["internal/analytics/consumer.go:12"] },
-    { id: "fact:0003", type: "gotchas", confidence: "high", status: "candidate",
+      evidence: ["internal/analytics/consumer.go:12"],
+      human_notes: ["Проверял вручную: роутинг отключён осознанно, включат в Q4"] },
+    { id: "fact:go-0003", type: "gotchas", confidence: "high", status: "candidate",
       statement: "Тесты billing_integration флакают на CI из-за таймаута Stripe-мока",
       evidence: ["billing/stripe_mock.go:44", "revert commit def5678"] },
   ],
 };
 
-const review = {};  // factId -> { decision: "approve"|"reject"|null, comment: "" }
-DATA.facts.forEach(f => review[f.id] = { decision: null, comment: "" });
+let DATA = DEMO_DATA;
+const review = {};
+let current = null, exportArmed = false;
 
-let current = DATA.slices[0].id;
 const slicesEl = document.getElementById("slices"), cardsEl = document.getElementById("cards"),
-      diagramEl = document.getElementById("diagram"), statEl = document.getElementById("stat");
+      diagramEl = document.getElementById("diagram"), statEl = document.getElementById("stat"),
+      exportBtn = document.getElementById("export");
+
+const undecided = () => DATA.facts.filter(f => !review[f.id].decision);
 
 function renderSlices() {
   slicesEl.innerHTML = "";
   for (const s of DATA.slices) {
+    const facts = DATA.facts.filter(f => f.type === s.id);
+    const un = facts.filter(f => !review[f.id].decision).length;
     const b = document.createElement("button");
     b.className = "slice" + (s.id === current ? " on" : "");
-    b.innerHTML = `<span>${s.name}</span><span class="n">${DATA.facts.filter(f => f.type === s.id).length}</span>`;
+    b.innerHTML = `<span>${s.name}</span><span class="n ${un ? "undec" : ""}">${un ? un + "/" : ""}${facts.length}</span>`;
     b.onclick = () => { current = s.id; render(); };
     slicesEl.appendChild(b);
   }
@@ -130,7 +144,7 @@ function renderSlices() {
 
 async function renderDiagram() {
   const s = DATA.slices.find(x => x.id === current);
-  if (!s.diagram) { diagramEl.style.display = "none"; return; }
+  if (!s || !s.diagram) { diagramEl.style.display = "none"; return; }
   diagramEl.style.display = "block";
   if (window.mermaid) {
     const { svg } = await window.mermaid.render("d" + Date.now(), s.diagram);
@@ -146,6 +160,7 @@ function renderCards() {
   for (const f of DATA.facts.filter(f => f.type === current)) {
     const r = review[f.id];
     const card = document.createElement("div");
+    card.dataset.factId = f.id;
     card.className = "card" + (r.decision === "approve" ? " approved" : r.decision === "reject" ? " rejected" : "");
     card.innerHTML = `
       <div class="row">
@@ -156,6 +171,7 @@ function renderCards() {
       </div>
       <p class="statement">${f.statement}</p>
       <div class="evidence">${f.evidence.map(e => `<span class="ev">${e}</span>`).join("")}</div>
+      ${f.human_notes?.length ? `<div class="notes">${f.human_notes.map(n => `<div class="note">💬 ${n}</div>`).join("")}</div>` : ""}
       <div class="actions">
         <button class="btn ok ${r.decision === "approve" ? "on" : ""}">✓ Принять</button>
         <button class="btn no ${r.decision === "reject" ? "on" : ""}">✗ Отклонить</button>
@@ -165,8 +181,8 @@ function renderCards() {
         class="${r.comment ? "open" : ""}">${r.comment}</textarea>`;
     const [ok, no, cm] = card.querySelectorAll(".btn");
     const ta = card.querySelector("textarea");
-    ok.onclick = () => { r.decision = r.decision === "approve" ? null : "approve"; render(); };
-    no.onclick = () => { r.decision = r.decision === "reject" ? null : "reject"; render(); };
+    ok.onclick = () => { r.decision = r.decision === "approve" ? null : "approve"; disarm(); render(); };
+    no.onclick = () => { r.decision = r.decision === "reject" ? null : "reject"; disarm(); render(); };
     cm.onclick = () => ta.classList.toggle("open");
     ta.oninput = () => { r.comment = ta.value; renderStat(); };
     cardsEl.appendChild(card);
@@ -177,21 +193,57 @@ function renderStat() {
   const vals = Object.values(review);
   const a = vals.filter(r => r.decision === "approve").length,
         rj = vals.filter(r => r.decision === "reject").length,
-        c = vals.filter(r => r.comment.trim()).length;
-  statEl.innerHTML = `Фактов: ${DATA.facts.length} · <b class="a">✓ ${a}</b> · <b class="r">✗ ${rj}</b> · <b class="c">💬 ${c}</b>`;
+        c = vals.filter(r => r.comment.trim()).length,
+        un = undecided().length;
+  statEl.innerHTML = `Фактов: ${DATA.facts.length} · <b class="a">✓ ${a}</b> · <b class="r">✗ ${rj}</b> · <b class="c">💬 ${c}</b>`
+    + (un ? ` · <b class="u" id="goto-undec" title="показать первый факт без решения">⚠ без решения: ${un}</b>` : "");
+  const g = document.getElementById("goto-undec");
+  if (g) g.onclick = jumpToUndecided;
 }
 
-function render() { renderSlices(); renderDiagram(); renderCards(); renderStat(); }
-render();
+function jumpToUndecided() {
+  const f = undecided()[0];
+  if (!f) return;
+  if (f.type !== current) { current = f.type; render(); }
+  requestAnimationFrame(() => {
+    const card = cardsEl.querySelector(`[data-fact-id="${CSS.escape(f.id)}"]`);
+    if (card) { card.scrollIntoView({ behavior: "smooth", block: "center" }); card.classList.add("attention"); }
+  });
+}
 
-document.getElementById("export").onclick = (e) => {
+function disarm() { exportArmed = false; exportBtn.classList.remove("armed"); exportBtn.textContent = "Экспортировать ревью"; }
+
+exportBtn.onclick = () => {
+  const un = undecided().length;
+  /* защита от молча потерянных фактов: при наличии фактов без решения первый клик
+     не экспортирует, а показывает их; повторный клик экспортирует осознанно */
+  if (un && !exportArmed) {
+    exportArmed = true;
+    exportBtn.classList.add("armed");
+    exportBtn.textContent = `Без решения: ${un} — нажми ещё раз, чтобы экспортировать`;
+    jumpToUndecided();
+    return;
+  }
   const payload = { skill: "tech-facts", review: {} };
   for (const [id, r] of Object.entries(review))
     if (r.decision || r.comment.trim())
       payload.review[id] = { decision: r.decision, comment: r.comment.trim() || undefined };
   navigator.clipboard?.writeText(JSON.stringify(payload, null, 2));
-  e.target.textContent = "Ревью скопировано — верни его агенту";
+  exportBtn.classList.remove("armed");
+  exportBtn.textContent = "Ревью скопировано — верни его агенту";
 };
+
+function render() { renderSlices(); renderDiagram(); renderCards(); renderStat(); }
+
+(async function init() {
+  try {
+    const r = await fetch("facts.json", { cache: "no-store" });
+    if (r.ok) DATA = await r.json();
+  } catch { /* нет facts.json — остаёмся на демо-данных */ }
+  DATA.facts.forEach(f => review[f.id] = { decision: null, comment: "" });
+  current = DATA.slices[0].id;
+  render();
+})();
 </script>
 </body>
 </html>

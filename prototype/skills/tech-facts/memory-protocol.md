@@ -93,6 +93,10 @@ extraction/task ──► candidate ──(человек подтвердил)�
 1. Схему инстанса агент создаёт сам под выбранные срезы: типы сущностей = используемые `kind`,
    типы связей = используемые `relation`, Fact — объект со ссылками на subject/object и evidence.
    Не сваливать всё в один тип «текстовая заметка» — реляционность и есть смысл.
+   **Стабильные ключи обязательны**: `fact_id` и `entry_id` — первичные ключи соответствующих
+   объектов. `xmd generate` сам их не даёт — проверь сгенерированную схему и допиши
+   (`xmd enhance` / руками), иначе ломается всё, что на них держится: перезапись статуса по id,
+   `superseded_by`, журналы; повторное извлечение создаст дубликаты вместо обновления.
 2. Выбрали новый срез позже → агент расширяет схему (новые kind/relation), не ломая старую.
 3. Журналы memory_read/memory_write — тоже сущности со связями на факты и задачи: цепочка
    «факт → чтение → задача → изменение памяти» должна доставаться обходом графа (критерий
@@ -101,6 +105,32 @@ extraction/task ──► candidate ──(человек подтвердил)�
 5. Вьюверы для человека (страницы по образцу `references/viewer.html`) — витрина, генерируемая из
    xmemory по запросу («покажи event graph»), а не отдельная база: правки из ревью возвращаются
    в xmemory, страница перегенерируется.
+6. **Журнальные записи ссылаются на факты только явными id.** Упоминание фактов описанием
+   («заstale-ил четыре схлопнутых факта») порождает в xmemory пустые объекты-призраки: всё, что
+   упомянуто текстом, экстрактор превращает в объект. Пиши `staled: [fact:mg-0001, …]` — никогда
+   прозой.
+
+### Готовое описание для `xmd generate`
+
+Проверено на живом инстансе — воспроизводит модель протокола почти дословно (не забудь после
+генерации проверить первичные ключи, п. 1):
+
+```bash
+$XMEMCLI xmd generate "Memory for reverse-engineered technical facts about a software project.
+Objects:
+- Entity: primary key entity_id (string, hierarchical ids allowed like 'module:application/manual-column-service');
+  kind (one of: module, event, endpoint, table, external_system, flag); name; attrs (free-form).
+- Fact: primary key fact_id (string with slice prefix, e.g. 'fact:eg-0042'); type (slice name);
+  statement (single sentence, <=200 chars); relation (produces, consumes, owns, depends_on, calls, has_property);
+  subject -> Entity (required); object -> Entity (optional); evidence (list of code refs 'file:line' or commit ids);
+  confidence (high/medium/low); status (candidate/active/stale); source (extraction/task/human);
+  human_notes (list of strings); superseded_by -> Fact (optional); status_reason; created_at.
+- JournalEntry: primary key entry_id; log (memory_read/memory_write/memory_review); task (string); at (timestamp);
+  explicit relations to Fact by fact_id: read_facts, created_facts, staled_facts, approved_facts,
+  rejected_facts, commented_facts. Journal entries must reference facts only via these relations,
+  never by textual description." -o schema.yml
+$XMEMCLI xmd validate schema.yml
+```
 
 ## Адаптер: файловый — fallback (`.tech-facts/` в корне репозитория)
 
