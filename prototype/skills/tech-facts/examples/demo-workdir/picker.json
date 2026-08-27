@@ -1,0 +1,77 @@
+{
+  "project": "services-platform",
+  "intro": "Contract-first .NET монолит: 5 модулей в src/Modules/*, общение через Contracts-проекты и in-process события, PostgreSQL с миграциями FluentMigrator. Разведка прошла по репозиторию — вот срезы, которые можно извлечь.",
+  "auto_approve": "high",
+  "slices": [
+    {
+      "id": "module-graph",
+      "title": "Граф модулей и зависимостей",
+      "stars": 5,
+      "auto_note": "извлекается автоматически из ссылок между проектами",
+      "cost": "S",
+      "found": "5 модулей (Orders, Billing, Pricing, Catalog, Notifications), ссылки только через *.Contracts — циклов нет",
+      "value": "База для всего остального: кто от кого зависит и где границы",
+      "recommended": true
+    },
+    {
+      "id": "event-graph",
+      "title": "Граф событий",
+      "stars": 4,
+      "auto_note": "извлекается автоматически; семантика доставки — с валидацией",
+      "cost": "S",
+      "found": "14 in-process событий через IEventBus в BuildingBlocks/, внешнего брокера нет",
+      "value": "Агент без этого среза забывает уведомить консюмеров при изменении публикатора",
+      "recommended": true
+    },
+    {
+      "id": "data-ownership",
+      "title": "Владение данными",
+      "stars": 3,
+      "auto_note": "схемы читаются из миграций, владельцы — по расположению репозиториев",
+      "cost": "M",
+      "found": "41 таблица в 5 схемах PostgreSQL, миграции FluentMigrator per-module",
+      "value": "Запрещает агенту писать в чужие таблицы напрямую, минуя контракт модуля",
+      "recommended": true
+    },
+    {
+      "id": "config-flags",
+      "title": "Конфигурация и фиче-флаги",
+      "stars": 4,
+      "auto_note": "флаги собираются из appsettings.* и IFeatureManager автоматически",
+      "cost": "S",
+      "found": "23 флага: 9 в appsettings.json, 14 через Microsoft.FeatureManagement",
+      "value": "Поведение системы ветвится на флагах — без карты агент чинит не ту ветку",
+      "recommended": false
+    },
+    {
+      "id": "external-apis",
+      "title": "Внешние интеграции",
+      "stars": 3,
+      "auto_note": "клиенты находятся по Refit-интерфейсам, ретраи и таймауты — с валидацией",
+      "cost": "M",
+      "found": "6 HTTP-клиентов через Refit + Polly: платёжный шлюз, 1С, dadata, SMS, e-mail, курсы валют",
+      "value": "Показывает, где система хрупкая к чужим сбоям и что замокать в тестах",
+      "recommended": false
+    },
+    {
+      "id": "ddd-context-map",
+      "title": "DDD Context Map",
+      "stars": 2,
+      "auto_note": "границы контекстов из кода не выводятся — это гипотеза по структуре модулей",
+      "cost": "L",
+      "found": "Модули совпадают с папками, но Pricing и Catalog делят словарь терминов — граница спорная",
+      "value": "Карта контекстов ловит расползание доменной модели раньше, чем оно попадёт в код",
+      "recommended": false
+    },
+    {
+      "id": "gotchas",
+      "title": "Грабли и неочевидности",
+      "stars": 1,
+      "auto_note": "почти не автоматизируется: собирается из TODO, комментариев и истории коммитов",
+      "cost": "L",
+      "found": "37 TODO/HACK-комментариев, 4 «временных» обходных пути старше двух лет",
+      "value": "Именно об это спотыкаются новые агенты и новые люди — дороже всего в поддержке",
+      "recommended": false
+    }
+  ]
+}

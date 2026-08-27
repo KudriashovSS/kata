@@ -1,155 +1,130 @@
 # Протокол памяти
 
-Модель данных не зависит от движка. Адаптеры: xmemory (первичный — из него читают агенты и
-генерируются вьюверы для человека) и файловый (fallback, работает всегда). Скилл пишет и читает
-только в терминах этой модели.
+Единственный источник истины о фактах — **xmemory**. Всё, что лежит в рабочем каталоге UI
+(`/tmp/...`) — витрина и транспорт, оно одноразовое; правки фактов существуют только как записи
+в памяти. Файловый адаптер `.tech-facts/` в репо — fallback исключительно когда xmemory
+недоступен (при появлении — мигрируй и удали).
 
-## Модель
+## Мини-ядро факта — единственное, что фиксировано
 
-### Entity — узел графа проекта
-
-```json
-{
-  "id": "module:orders",
-  "kind": "module | event | endpoint | table | external_system | flag",
-  "name": "Orders",
-  "attrs": { "path": "internal/orders" }
-}
-```
-
-Гранулярность внутри модуля: когда субъект факта — конкретный компонент (хендлер, сервис), а не
-модуль целиком, используй иерархический id (`module:application/manual-column-service`) или
-`attrs.component` у факта. Иначе все produces/consumes-факты повиснут на одном модуле и граф
-выродится.
-
-### Fact — утверждение о связи или свойстве
+Схему памяти проектирует **агент под конкретный проект**, и она эволюционирует вместе с памятью.
+Запрещено заранее решать за будущего агента, как хранить данные. Фиксирован только минимум, на
+котором держатся ревью-цикл, авто-подтверждение и вьювер:
 
 ```json
 {
   "id": "fact:eg-0042",
-  "type": "event-graph",
   "statement": "Orders публикует order.created при успешном создании заказа",
-  "subject": "module:orders",
-  "relation": "produces",
-  "object": "event:order.created",
-  "evidence": [
-    { "kind": "code", "ref": "internal/orders/service.go:87" },
-    { "kind": "commit", "ref": "abc1234" }
-  ],
+  "evidence": [{ "kind": "code", "ref": "internal/orders/service.go:87" }],
   "confidence": "high | medium | low",
-  "status": "candidate | active | stale",
-  "source": "extraction | task | human",
-  "human_notes": ["Проверял вручную: у consumer-а Analytics обработчик отключён"],
-  "superseded_by": null,
-  "status_reason": null,
-  "created_at": "2026-08-26T12:00:00Z"
+  "status": "candidate | active | stale"
 }
 ```
 
-Id факта несёт префикс среза (`eg` — event-graph, `mg` — module-graph, …) — параллельное
-извлечение срезов не коллидирует по счётчикам. `human_notes` — комментарии человека из ревью;
-они читаются агентами вместе с фактом и часто ценнее самого statement.
+Рекомендуемые (шелл UI их понимает, агенты читают): `provenance` (`declared` — из декларативного
+артефакта, `observed` — выведено из кода, `inferred` — интерпретация), `type` (срез), `subject`/
+`relation`/`object` (реляционность — смысл памяти: связи «событие → владелец → таблица» дают
+кратную пользу), `human_notes[]`, `question`, `source` (`extraction|task|human`), `superseded_by`,
+`status_reason`, `auto_approved`, `created_at`. Всё остальное — свободные поля под проект:
+`delivery: "sync"`, `env_diff`, что угодно. UI покажет их в деталях карточки как есть.
 
-Свойства без второй сущности (инварианты, gotchas) — тот же Fact c `relation: "has_property"` и
-`object: null`; суть в `statement` + evidence. Для config-flags субъектом такого факта естественно
-выступает сама сущность флага:
+Id факта несёт префикс среза (`eg`, `mg`, …) — параллельное извлечение не коллидирует.
+`statement` — одно предложение ≤ 200 символов; детали в evidence и свободных полях.
+Факт без evidence не существует.
+
+## Жизненный цикл и авто-подтверждение
+
+```
+extraction/task ──► candidate ──┬─(авто: high + declared/observed + evidence)──► active (auto_approved)
+                                └─(человек в ревью)───────────────────────────► active | stale(rejected)
+active ──(код разошёлся / superseded / отозван)──► stale
+```
+
+Агент **не таскает человека по каждому факту** — подтверждает сам то, в чём уверен:
+
+- **Авто-approve**: `confidence: high` И `provenance: declared|observed` И есть code-evidence →
+  `active` c `auto_approved: true`. В ревью такие факты показываются свёрнутой секцией
+  «Авто-подтверждено» — человек может отозвать любой (`unapprove` → назад в candidate).
+- **Никогда не авто-подтверждаются**: `inferred`-факты, весь срез gotchas, `medium|low`,
+  факты с заполненным `question`, факты о границе видимости.
+- Человеку на ревью едет только сомнительное; факты с `question`/`low` — секцией «Нужен ваш
+  ответ» на самом верху.
+
+Правила статусов: читаются агентами только `active`; ничего не удаляется — только смена статуса
+с `status_reason` (+`superseded_by`); противоречие двух фактов об одном и том же решает код
+(«код прав»), проигравший → `stale` со ссылкой на победителя; неразрешимое кодом — эскалация
+человеку. Комментарии человека из ревью — в `human_notes`: они едут в контекст будущих агентов
+вместе с фактом и часто ценнее самого statement.
+
+## Журналы — observability
 
 ```json
-{ "id": "fact:cf-0003", "type": "config-flags", "subject": "flag:auth-enabled",
-  "relation": "has_property", "object": null,
-  "statement": "AuthOptions:Enabled выключен в dev; при выключенном флаге аудит-актор падает в System" }
-```
-
-### Жизненный цикл факта
-
-```
-extraction/task ──► candidate ──(человек подтвердил)──► active ──(код разошёлся / superseded / отклонён)──► stale
-```
-
-- **Читаются агентами только `active`.** candidate ждут человека, stale хранятся для истории.
-- **Ничего не удаляется** — только смена статуса с обязательным `status_reason` и, если применимо,
-  `superseded_by`. Это одновременно и «забывание/устаревание», и материал для разрешения
-  противоречий.
-- **Противоречия:** два факта об одном `(subject, relation, object)` с разными statement — побеждает
-  тот, чей evidence свежее и подтверждён кодом сейчас (правило «код прав»); проигравший → `stale`
-  со ссылкой на победителя. Конфликт, который нельзя решить кодом, эскалируется человеку.
-
-### Журналы — observability
-
-```json
-{ "log": "memory_read",   "task": "issue-123", "facts": ["fact:eg-0042", "fact:go-0017"], "at": "..." }
+{ "log": "memory_read",   "task": "issue-123", "facts": ["fact:eg-0042"], "at": "..." }
 { "log": "memory_write",  "task": "issue-123", "created": ["fact:eg-0090"], "staled": ["fact:eg-0042"], "at": "..." }
-{ "log": "memory_review", "task": "build-1", "approved": ["fact:eg-0042"], "rejected": ["fact:mg-0004"], "commented": ["fact:eg-0002"], "at": "..." }
+{ "log": "memory_review", "task": "build-1", "approved": ["fact:eg-0042"], "auto_approved": ["fact:eg-0001"], "rejected": ["fact:mg-0004"], "commented": ["fact:eg-0002"], "at": "..." }
 ```
 
-В режиме строительства журнал начинается с memory_review/memory_write — memory_read появляется
-только в режиме использования.
-
-Журналы отвечают на вопросы демо и эвала: «какой факт в какую задачу попал», «какая задача породила
-этот факт», «что изменилось в памяти после прогона». Без них дельту не доказать.
+Журнальные записи ссылаются на факты **только явными id** — упоминание прозой («заstale-ил
+четыре факта») рождает в xmemory объекты-призраки. В режиме строительства журнал начинается с
+memory_review/memory_write; memory_read появляется в режиме использования. Журналы отвечают на
+вопросы демо и эвала: «какой факт в какую задачу попал», «что изменилось после прогона».
 
 ## Адаптер: xmemory (первичный)
 
-1. Схему инстанса агент создаёт сам под выбранные срезы: типы сущностей = используемые `kind`,
-   типы связей = используемые `relation`, Fact — объект со ссылками на subject/object и evidence.
-   Не сваливать всё в один тип «текстовая заметка» — реляционность и есть смысл.
-   **Стабильные ключи обязательны**: `fact_id` и `entry_id` — первичные ключи соответствующих
-   объектов. `xmd generate` сам их не даёт — проверь сгенерированную схему и допиши
-   (`xmd enhance` / руками), иначе ломается всё, что на них держится: перезапись статуса по id,
-   `superseded_by`, журналы; повторное извлечение создаст дубликаты вместо обновления.
-2. Выбрали новый срез позже → агент расширяет схему (новые kind/relation), не ломая старую.
-3. Журналы memory_read/memory_write — тоже сущности со связями на факты и задачи: цепочка
-   «факт → чтение → задача → изменение памяти» должна доставаться обходом графа (критерий
-   номинации: наглядный write → read цикл).
-4. Снапшоты для эвалов: отдельный инстанс/неймспейс на каждую конфигурацию эксперимента.
-5. Вьюверы для человека (страницы по образцу `references/viewer.html`) — витрина, генерируемая из
-   xmemory по запросу («покажи event graph»), а не отдельная база: правки из ревью возвращаются
-   в xmemory, страница перегенерируется.
-6. **Журнальные записи ссылаются на факты только явными id.** Упоминание фактов описанием
-   («заstale-ил четыре схлопнутых факта») порождает в xmemory пустые объекты-призраки: всё, что
-   упомянуто текстом, экстрактор превращает в объект. Пиши `staled: [fact:mg-0001, …]` — никогда
-   прозой.
+1. Схему инстанса агент проектирует сам под выбранные срезы и **дорабатывает при эволюции**
+   (новые срезы, новые поля, новые типы связей — не ломая старое). Не сваливать всё в один тип
+   «текстовая заметка» — реляционность и есть смысл. **Стабильные первичные ключи обязательны**:
+   `fact_id`, `entry_id` (`xmd generate` сам их не даёт — проверь и допиши через `xmd enhance`),
+   иначе ломаются перезапись статуса, `superseded_by` и журналы, а повторное извлечение плодит
+   дубликаты.
+2. Затравка для `xmd generate` — ниже. Это **пример, не предписание**: перепиши описание под
+   срезы и поля своего проекта, сохранив мини-ядро и журнальные связи.
+3. Журналы — сущности со связями на факты и задачи: цепочка «факт → чтение → задача → изменение»
+   должна доставаться обходом графа.
+4. Снапшоты для эвалов: отдельный инстанс/неймспейс на конфигурацию эксперимента.
+5. Практика xmemcli: креды (`.xmemrc.json`) ищутся от текущей директории вверх — **работай из
+   корня проекта**, не из /tmp (иначе «Not logged in»; при необходимости — симлинк).
+6. **Обязательная верификация после переноса**, тремя запросами: пересчёт фактов по срезам
+   (ловит призраков); обход «факт → ревью → задача»; одна агентская выборка («собираюсь добавить
+   доменное событие — что нужно знать») — релевантные факты возвращаются. Расхождение — чини до
+   конца сессии.
 
-### Готовое описание для `xmd generate`
-
-Проверено на живом инстансе — воспроизводит модель протокола почти дословно (не забудь после
-генерации проверить первичные ключи, п. 1):
+Затравка (проверена на живом инстансе):
 
 ```bash
 $XMEMCLI xmd generate "Memory for reverse-engineered technical facts about a software project.
 Objects:
-- Entity: primary key entity_id (string, hierarchical ids allowed like 'module:application/manual-column-service');
-  kind (one of: module, event, endpoint, table, external_system, flag); name; attrs (free-form).
-- Fact: primary key fact_id (string with slice prefix, e.g. 'fact:eg-0042'); type (slice name);
-  statement (single sentence, <=200 chars); relation (produces, consumes, owns, depends_on, calls, has_property);
-  subject -> Entity (required); object -> Entity (optional); evidence (list of code refs 'file:line' or commit ids);
-  confidence (high/medium/low); status (candidate/active/stale); source (extraction/task/human);
-  human_notes (list of strings); superseded_by -> Fact (optional); status_reason; created_at.
-- JournalEntry: primary key entry_id; log (memory_read/memory_write/memory_review); task (string); at (timestamp);
+- Entity: primary key entity_id; kind (module, event, endpoint, table, external_system, flag, ...); name; attrs.
+- Fact: primary key fact_id (slice-prefixed, e.g. 'fact:eg-0042'); statement (<=200 chars);
+  evidence (list of 'file:line' or commit refs); confidence (high/medium/low);
+  status (candidate/active/stale); provenance (declared/observed/inferred);
+  type (slice); subject -> Entity; object -> Entity (optional); relation;
+  auto_approved (bool); human_notes; question; source; superseded_by -> Fact; status_reason; created_at.
+- JournalEntry: primary key entry_id; log (memory_read/memory_write/memory_review); task; at;
   explicit relations to Fact by fact_id: read_facts, created_facts, staled_facts, approved_facts,
-  rejected_facts, commented_facts. Journal entries must reference facts only via these relations,
-  never by textual description." -o schema.yml
+  auto_approved_facts, rejected_facts, commented_facts. Journal entries reference facts only via
+  these relations, never by textual description." -o schema.yml
 $XMEMCLI xmd validate schema.yml
 ```
 
 ## Адаптер: файловый — fallback (`.tech-facts/` в корне репозитория)
+
+Только когда xmemory недоступен:
 
 ```
 .tech-facts/
   schema.json      # какие срезы включены, версия модели
   entities.jsonl   # по Entity на строку
   facts.jsonl      # по Fact на строку; правки статуса — перезапись строки по id
-  journal.jsonl    # memory_read / memory_write / memory_review, append-only
+  journal.jsonl    # append-only
 ```
 
-Работает без инфраструктуры, диффы видны в git, память версионируется вместе с кодом (снапшот
-памяти = коммит — удобно для эвалов). Ограничение: выборка связями — грепом, на больших базах
-деградирует. При появлении xmemory-инстанса содержимое мигрируется в него один-в-один.
+Диффы видны в git, снапшот памяти = коммит (удобно для эвалов). Ограничение: выборка связями —
+грепом. При появлении xmemory мигрируй один-в-один и удали каталог — двух источников истины
+быть не должно.
 
 ## Правила объёма
 
-- В контекст задачи попадает 5–20 релевантных active-фактов, отобранных по связям затронутых
-  сущностей, а не вся база.
-- statement — одно предложение, ≤ 200 символов. Детали живут в evidence, а не в тексте факта.
-- Дифф памяти на подтверждение человеку — списком из ≤ 10 строк вида
-  `+ fact:0090 (event-graph): ...` / `~ fact:0042 → stale: superseded by fact:0090`.
+- В контекст задачи — 5–20 релевантных `active`-фактов по связям затронутых сущностей, не вся база.
+- Дифф памяти на подтверждение человеку — ≤ 10 строк вида `+ fact:0090 (event-graph): ...` /
+  `~ fact:0042 → stale: superseded by fact:0090`; больше — мини-ревью через UI.

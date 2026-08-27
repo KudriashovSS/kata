@@ -1,0 +1,335 @@
+[
+  {
+    "id": "fact:mg-0001",
+    "type": "module-graph",
+    "statement": "Система состоит из 5 модулей: Orders, Billing, Pricing, Catalog, Notifications — каждый в src/Modules/<Имя> со своим Contracts-проектом",
+    "evidence": [{ "kind": "code", "ref": "src/Modules/" }, { "kind": "code", "ref": "ServicesPlatform.sln:12" }],
+    "confidence": "high",
+    "status": "active"
+  },
+  {
+    "id": "fact:mg-0002",
+    "type": "module-graph",
+    "statement": "Модули не ссылаются друг на друга напрямую — только на *.Contracts; это проверяется тестом архитектуры",
+    "evidence": [{ "kind": "code", "ref": "tests/ArchitectureTests/ModuleBoundaryTests.cs:21" }],
+    "confidence": "high",
+    "status": "active"
+  },
+  {
+    "id": "fact:mg-0003",
+    "type": "module-graph",
+    "statement": "Orders зависит от контрактов Pricing (расчёт цены при создании заказа вызывается синхронно через IPricingService)",
+    "evidence": [{ "kind": "code", "ref": "src/Modules/Orders/Application/CreateOrderHandler.cs:52" }],
+    "confidence": "high",
+    "status": "active",
+    "delivery": "sync"
+  },
+  {
+    "id": "fact:mg-0004",
+    "type": "module-graph",
+    "statement": "Catalog зависит от контрактов Pricing только через событие price.updated — синхронных вызовов нет",
+    "evidence": [{ "kind": "code", "ref": "src/Modules/Catalog/Application/PriceUpdatedConsumer.cs:28" }],
+    "confidence": "high",
+    "status": "auto"
+  },
+  {
+    "id": "fact:mg-0005",
+    "type": "module-graph",
+    "statement": "BuildingBlocks — общая инфраструктура (шина событий, UnitOfWork, Result-типы); доменной логики там нет",
+    "evidence": [{ "kind": "code", "ref": "src/BuildingBlocks/" }],
+    "confidence": "medium",
+    "status": "active",
+    "human_notes": "Почти правда: в Result-типах прячется логика скидок, давно хотим вынести. Не кладите туда новое."
+  },
+  {
+    "id": "fact:mg-0006",
+    "type": "module-graph",
+    "statement": "Notifications ни от кого не зависит по контрактам — только слушает события",
+    "evidence": [{ "kind": "code", "ref": "src/Modules/Notifications/Notifications.csproj:9" }],
+    "confidence": "high",
+    "status": "auto"
+  },
+  {
+    "id": "fact:eg-0001",
+    "type": "event-graph",
+    "statement": "Orders публикует order.created при успешном создании заказа",
+    "evidence": [{ "kind": "code", "ref": "src/Modules/Orders/Application/CreateOrderHandler.cs:87" }],
+    "confidence": "high",
+    "status": "active",
+    "publisher": "Orders",
+    "event": "order.created",
+    "delivery": "sync"
+  },
+  {
+    "id": "fact:eg-0002",
+    "type": "event-graph",
+    "statement": "Billing подписан на order.created и создаёт черновик счёта",
+    "evidence": [{ "kind": "code", "ref": "src/Modules/Billing/Application/OrderCreatedConsumer.cs:24" }],
+    "confidence": "high",
+    "status": "active",
+    "consumer": "Billing",
+    "event": "order.created",
+    "delivery": "sync"
+  },
+  {
+    "id": "fact:eg-0003",
+    "type": "event-graph",
+    "statement": "Notifications подписан на order.created и шлёт письмо-подтверждение",
+    "evidence": [{ "kind": "code", "ref": "src/Modules/Notifications/Application/OrderCreatedConsumer.cs:19" }],
+    "confidence": "high",
+    "status": "auto",
+    "consumer": "Notifications",
+    "event": "order.created",
+    "delivery": "sync"
+  },
+  {
+    "id": "fact:eg-0004",
+    "type": "event-graph",
+    "statement": "Orders публикует order.cancelled при отмене заказа человеком или таймаутом оплаты",
+    "evidence": [
+      { "kind": "code", "ref": "src/Modules/Orders/Application/CancelOrderHandler.cs:41" },
+      { "kind": "code", "ref": "src/Modules/Orders/Infrastructure/PaymentTimeoutJob.cs:33" }
+    ],
+    "confidence": "high",
+    "status": "active",
+    "publisher": "Orders",
+    "event": "order.cancelled",
+    "delivery": "sync"
+  },
+  {
+    "id": "fact:eg-0006",
+    "type": "event-graph",
+    "statement": "Billing публикует invoice.issued после выставления счёта",
+    "evidence": [{ "kind": "code", "ref": "src/Modules/Billing/Application/IssueInvoiceHandler.cs:64" }],
+    "confidence": "high",
+    "status": "auto",
+    "publisher": "Billing",
+    "event": "invoice.issued",
+    "delivery": "sync"
+  },
+  {
+    "id": "fact:eg-0010",
+    "type": "event-graph",
+    "statement": "Billing публикует payment.failed при отказе платёжного шлюза, Orders по нему переводит заказ в on-hold",
+    "evidence": [
+      { "kind": "code", "ref": "src/Modules/Billing/Infrastructure/PaymentGatewayCallbackController.cs:56" },
+      { "kind": "code", "ref": "src/Modules/Orders/Application/PaymentFailedConsumer.cs:31" }
+    ],
+    "confidence": "medium",
+    "status": "active",
+    "publisher": "Billing",
+    "event": "payment.failed",
+    "delivery": "sync",
+    "human_notes": "Подтверждаю. on-hold снимается руками из админки — автоматики нет."
+  },
+  {
+    "id": "fact:eg-0011",
+    "type": "event-graph",
+    "statement": "Orders подписан на price.updated, но обработчик только пишет warning в лог — пересчёта открытых заказов нет",
+    "evidence": [{ "kind": "code", "ref": "src/Modules/Orders/Application/PriceUpdatedConsumer.cs:15" }],
+    "confidence": "medium",
+    "status": "candidate",
+    "consumer": "Orders",
+    "event": "price.updated",
+    "delivery": "sync"
+  },
+  {
+    "id": "fact:eg-0012",
+    "type": "event-graph",
+    "statement": "Все события доставляются синхронно в той же транзакции, что и команда: упал консюмер — откатывается вся операция",
+    "evidence": [
+      { "kind": "code", "ref": "src/BuildingBlocks/Events/InProcessEventBus.cs:44" },
+      { "kind": "code", "ref": "src/BuildingBlocks/Events/UnitOfWorkBehavior.cs:29" }
+    ],
+    "confidence": "high",
+    "status": "active",
+    "delivery": "sync",
+    "human_notes": "Это главный факт про события. Outbox обсуждали дважды и оба раза откладывали."
+  },
+  {
+    "id": "fact:eg-0013",
+    "type": "event-graph",
+    "statement": "customer.registered объявлено в Contracts, но публикатора в основном коде нет",
+    "evidence": [{ "kind": "code", "ref": "src/Contracts/Customers/CustomerRegistered.cs:8" }],
+    "confidence": "low",
+    "status": "stale",
+    "status_reason": "Человек подтвердил: событие публиковал legacy-импорт, выключенный в 2024. Контракт остался мусором.",
+    "event": "customer.registered"
+  },
+  {
+    "id": "fact:do-0001",
+    "type": "data-ownership",
+    "statement": "Каждый модуль владеет своей схемой PostgreSQL: orders, billing, pricing, catalog, notifications",
+    "evidence": [{ "kind": "code", "ref": "src/Modules/Orders/Infrastructure/Migrations/0001_InitSchema.cs:10" }],
+    "confidence": "high",
+    "status": "active"
+  },
+  {
+    "id": "fact:do-0002",
+    "type": "data-ownership",
+    "statement": "Таблица orders.orders — источник истины по заказам; Billing хранит только own-копию номера и суммы",
+    "evidence": [
+      { "kind": "code", "ref": "src/Modules/Orders/Infrastructure/Migrations/0003_Orders.cs:18" },
+      { "kind": "code", "ref": "src/Modules/Billing/Domain/InvoiceDraft.cs:14" }
+    ],
+    "confidence": "high",
+    "status": "active",
+    "table": "orders.orders",
+    "owner": "Orders"
+  },
+  {
+    "id": "fact:do-0003",
+    "type": "data-ownership",
+    "statement": "Читать чужие таблицы можно только через контрактные read-модели; прямых cross-schema JOIN в коде нет",
+    "evidence": [{ "kind": "code", "ref": "tests/ArchitectureTests/SchemaBoundaryTests.cs:33" }],
+    "confidence": "medium",
+    "status": "auto"
+  },
+  {
+    "id": "fact:do-0004",
+    "type": "data-ownership",
+    "statement": "Отчёт revenue_daily собирается ночным SQL-джобом с JOIN между orders и billing — единственное легальное исключение из границ схем",
+    "evidence": [{ "kind": "code", "ref": "ops/reporting/revenue_daily.sql:7" }],
+    "confidence": "medium",
+    "status": "active",
+    "table": "reporting.revenue_daily",
+    "owner": "ops",
+    "human_notes": "Исключение согласовано с DBA в 2025, тикет OPS-841."
+  },
+  {
+    "id": "fact:do-0005",
+    "type": "data-ownership",
+    "statement": "pricing.price_history партиционирована по месяцам; старше 24 месяцев — дропается",
+    "evidence": [{ "kind": "code", "ref": "src/Modules/Pricing/Infrastructure/Migrations/0009_PartitionPriceHistory.cs:22" }],
+    "confidence": "high",
+    "status": "auto",
+    "table": "pricing.price_history",
+    "owner": "Pricing"
+  },
+  {
+    "id": "fact:cf-0001",
+    "type": "config-flags",
+    "statement": "Флаг NewPricing переключает расчёт цены на v2-алгоритм; в проде включён на 100% с мая 2026",
+    "evidence": [
+      { "kind": "code", "ref": "src/Modules/Pricing/Application/PriceCalculator.cs:42" },
+      { "kind": "config", "ref": "src/Host/appsettings.Production.json:31" }
+    ],
+    "confidence": "high",
+    "status": "active",
+    "flag": "NewPricing",
+    "default": "on"
+  },
+  {
+    "id": "fact:cf-0002",
+    "type": "config-flags",
+    "statement": "Флаг StrictStockCheck выключен в проде: заказ можно создать при нулевом остатке",
+    "evidence": [
+      { "kind": "code", "ref": "src/Modules/Orders/Application/CreateOrderHandler.cs:61" },
+      { "kind": "config", "ref": "src/Host/appsettings.Production.json:35" }
+    ],
+    "confidence": "high",
+    "status": "active",
+    "flag": "StrictStockCheck",
+    "default": "off",
+    "human_notes": "Выключен сознательно: продажи важнее остатков, недостачу разруливает саппорт."
+  },
+  {
+    "id": "fact:cf-0003",
+    "type": "config-flags",
+    "statement": "Billing:RetryCount управляет ретраями к платёжному шлюзу; в проде 3, в стейджинге 0",
+    "evidence": [{ "kind": "code", "ref": "src/Modules/Billing/Infrastructure/PaymentGatewayClient.cs:27" }],
+    "confidence": "high",
+    "status": "auto",
+    "flag": "Billing:RetryCount",
+    "default": "3"
+  },
+  {
+    "id": "fact:cf-0004",
+    "type": "config-flags",
+    "statement": "Флаг LegacyImportEnabled нигде в коде не читается — мёртвая конфигурация",
+    "evidence": [{ "kind": "config", "ref": "src/Host/appsettings.json:44" }],
+    "confidence": "medium",
+    "status": "stale",
+    "status_reason": "После удаления legacy-импорта в 0f3c2a1 флаг остался только в конфиге.",
+    "flag": "LegacyImportEnabled"
+  },
+  {
+    "id": "fact:cf-0005",
+    "type": "config-flags",
+    "statement": "Notifications:SmtpTimeoutSeconds по умолчанию 30 — столько же, сколько HTTP-таймаут фронта, поэтому клиент видит 500 вместо долгого ожидания",
+    "evidence": [{ "kind": "code", "ref": "src/Modules/Notifications/Infrastructure/SmtpSender.cs:71" }],
+    "confidence": "medium",
+    "status": "candidate",
+    "flag": "Notifications:SmtpTimeoutSeconds",
+    "default": "30"
+  },
+  {
+    "id": "fact:ea-0001",
+    "type": "external-apis",
+    "statement": "Платёжный шлюз вызывается через Refit-клиент IPaymentGatewayApi с Polly-ретраями (3 попытки, экспоненциальная пауза)",
+    "evidence": [{ "kind": "code", "ref": "src/Modules/Billing/Infrastructure/PaymentGatewayClient.cs:19" }],
+    "confidence": "high",
+    "status": "active",
+    "delivery": "sync",
+    "external": "payment-gateway"
+  },
+  {
+    "id": "fact:ea-0002",
+    "type": "external-apis",
+    "statement": "Выгрузка в 1С идёт ночным джобом ExportTo1CJob; днём интеграция не вызывается",
+    "evidence": [{ "kind": "code", "ref": "src/Modules/Billing/Infrastructure/ExportTo1CJob.cs:25" }],
+    "confidence": "medium",
+    "status": "auto",
+    "delivery": "batch",
+    "external": "1c"
+  },
+  {
+    "id": "fact:gt-0001",
+    "type": "gotchas",
+    "statement": "SMTP-таймаут в Notifications роняет создание заказа: события синхронные, а отправка письма — в том же вызове",
+    "evidence": [
+      { "kind": "code", "ref": "src/Modules/Notifications/Infrastructure/SmtpSender.cs:71" },
+      { "kind": "code", "ref": "src/BuildingBlocks/Events/InProcessEventBus.cs:52" }
+    ],
+    "confidence": "high",
+    "status": "active",
+    "human_notes": "Дважды ловили в проде (инциденты INC-207, INC-289). Правильный фикс — outbox, пока живём с коротким таймаутом.",
+    "severity": "high"
+  },
+  {
+    "id": "fact:gt-0002",
+    "type": "gotchas",
+    "statement": "PaymentTimeoutJob и человек могут отменить заказ одновременно — вторая отмена падает на инварианте статуса, джоб молча съедает исключение",
+    "evidence": [{ "kind": "code", "ref": "src/Modules/Orders/Infrastructure/PaymentTimeoutJob.cs:47" }],
+    "confidence": "medium",
+    "status": "active",
+    "severity": "medium"
+  },
+  {
+    "id": "fact:gt-0003",
+    "type": "gotchas",
+    "statement": "Result-типы в BuildingBlocks содержат бизнес-логику скидок — при «чисто инфраструктурном» рефакторинге легко сломать цены",
+    "evidence": [{ "kind": "code", "ref": "src/BuildingBlocks/Results/DiscountedResult.cs:31" }],
+    "confidence": "medium",
+    "status": "candidate",
+    "severity": "medium"
+  },
+  {
+    "id": "fact:gt-0004",
+    "type": "gotchas",
+    "statement": "Тестовая база в CI не партиционирована, поэтому миграции Pricing проходят в CI и падают на проде",
+    "evidence": [{ "kind": "code", "ref": ".github/workflows/ci.yml:58" }],
+    "confidence": "low",
+    "status": "candidate",
+    "severity": "high"
+  },
+  {
+    "id": "fact:gt-0005",
+    "type": "gotchas",
+    "statement": "Каталог кэширует цены в памяти на 15 минут — после price.updated витрина может отдавать старую цену",
+    "evidence": [{ "kind": "code", "ref": "src/Modules/Catalog/Infrastructure/PriceCache.cs:18" }],
+    "confidence": "high",
+    "status": "rejected",
+    "status_reason": "Человек: кэш инвалидируется консюмером price.updated, строка 34 того же файла. Факт неверен."
+  }
+]

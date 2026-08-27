@@ -1,0 +1,136 @@
+{
+  "project": "services-platform",
+  "generated_at": "2026-08-27T12:40:00Z",
+  "pages": [
+    {
+      "id": "overview",
+      "title": "Обзор",
+      "icon": "home",
+      "blocks": [
+        {
+          "type": "markdown",
+          "md": "## Что это за система\n\n**services-platform** — contract-first .NET монолит интернет-магазина: приём заказов, биллинг, прайсинг, витрина и уведомления. Один процесс, одна база PostgreSQL, пять модулей с жёсткими границами.\n\n### Ключевые правила\n\n- Модули общаются **только** через `*.Contracts` и in-process события — прямых ссылок нет (проверяется архитектурным тестом).\n- Каждый модуль владеет своей схемой в PostgreSQL; чужие таблицы — только через read-модели.\n- События доставляются *синхронно в транзакции команды*: упал консюмер — откатилась вся операция.\n\n### Где что лежит\n\n| Путь | Что там |\n| --- | --- |\n| `src/Modules/<Имя>` | модуль: Application, Domain, Infrastructure |\n| `src/Contracts` | контракты и события между модулями |\n| `src/BuildingBlocks` | шина событий, UnitOfWork, Result-типы |\n| `ops/reporting` | ночные SQL-джобы отчётности |\n\nПодробности — на страницах слева; источник фактов описан в [протоколе](#overview)."
+        },
+        {
+          "type": "stats",
+          "items": [
+            { "label": "Фактов", "value": 30 },
+            { "label": "Активных", "value": 16 },
+            { "label": "Авто-подтверждено", "value": 7 },
+            { "label": "Кандидатов", "value": 4 },
+            { "label": "Устаревших", "value": 2 }
+          ]
+        },
+        {
+          "type": "mermaid",
+          "title": "Модули и зависимости",
+          "code": "flowchart LR\n  Orders -- calls --> Pricing\n  Orders -- publishes --> Events((события))\n  Billing -- publishes --> Events\n  Pricing -- publishes --> Events\n  Events -- notifies --> Billing\n  Events -- notifies --> Catalog\n  Events -- notifies --> Notifications\n  Billing -- calls --> Gateway[Платёжный шлюз]\n  Billing -- exports --> OneC[1С]"
+        },
+        {
+          "type": "facts",
+          "title": "Главные инварианты",
+          "filter": { "type": ["module-graph", "event-graph"], "confidence": "high", "status": "active" }
+        }
+      ]
+    },
+    {
+      "id": "events",
+      "title": "События",
+      "icon": "events",
+      "blocks": [
+        {
+          "type": "markdown",
+          "md": "## Граф событий\n\n14 in-process событий через `IEventBus` из `BuildingBlocks`. Внешнего брокера нет — вся доставка синхронная, в транзакции публикатора."
+        },
+        {
+          "type": "mermaid",
+          "title": "Поток событий",
+          "code": "flowchart LR\n  Orders -- publishes --> ev_created[order.created]\n  ev_created -- notifies --> Billing\n  ev_created -- notifies --> Notifications\n  Orders -- publishes --> ev_cancelled[order.cancelled]\n  ev_cancelled -- notifies --> Billing\n  Billing -- publishes --> ev_invoice[invoice.issued]\n  ev_invoice -- notifies --> Notifications\n  Billing -- publishes --> ev_payfail[payment.failed]\n  ev_payfail -- notifies --> Orders\n  Pricing -- publishes --> ev_price[price.updated]\n  ev_price -- notifies --> Catalog\n  ev_price -- notifies --> Orders"
+        },
+        {
+          "type": "facts",
+          "title": "Факты о событиях",
+          "filter": { "type": "event-graph" }
+        }
+      ]
+    },
+    {
+      "id": "data",
+      "title": "Данные",
+      "icon": "database",
+      "blocks": [
+        {
+          "type": "markdown",
+          "md": "## Владение данными\n\n41 таблица в 5 схемах PostgreSQL, миграции FluentMigrator — per-module. Ниже ключевые таблицы и их владельцы."
+        },
+        {
+          "type": "table",
+          "title": "Ключевые таблицы",
+          "columns": ["Таблица", "Владелец", "Что хранит", "Evidence"],
+          "rows": [
+            ["orders.orders", "Orders", "источник истины по заказам", "Migrations/0003_Orders.cs:18"],
+            ["orders.order_lines", "Orders", "строки заказа", "Migrations/0003_Orders.cs:44"],
+            ["billing.invoices", "Billing", "счета и статусы оплат", "Migrations/0002_Invoices.cs:15"],
+            ["pricing.price_history", "Pricing", "история цен, партиции по месяцам", "Migrations/0009_PartitionPriceHistory.cs:22"],
+            ["catalog.products", "Catalog", "витринные товары и цены", "Migrations/0001_Products.cs:12"],
+            ["reporting.revenue_daily", "ops (ночной джоб)", "дневная выручка, cross-schema JOIN", "ops/reporting/revenue_daily.sql:7"]
+          ]
+        },
+        {
+          "type": "facts",
+          "title": "Факты о данных",
+          "filter": { "type": "data-ownership" }
+        }
+      ]
+    },
+    {
+      "id": "config",
+      "title": "Конфигурация",
+      "icon": "flag",
+      "blocks": [
+        {
+          "type": "markdown",
+          "md": "## Конфигурация и фиче-флаги\n\n23 флага: 9 в `appsettings.*`, 14 через `Microsoft.FeatureManagement`. Ниже те, что реально ветвят поведение."
+        },
+        {
+          "type": "table",
+          "title": "Флаги",
+          "columns": ["Флаг", "Что переключает", "Прод", "Evidence"],
+          "rows": [
+            ["NewPricing", "v2-алгоритм расчёта цены", "on", "PriceCalculator.cs:42"],
+            ["StrictStockCheck", "запрет заказа при нулевом остатке", "off", "CreateOrderHandler.cs:61"],
+            ["Billing:RetryCount", "ретраи к платёжному шлюзу", "3", "PaymentGatewayClient.cs:27"],
+            ["Notifications:SmtpTimeoutSeconds", "таймаут SMTP-отправки", "30", "SmtpSender.cs:71"],
+            ["LegacyImportEnabled", "ничего — мёртвый флаг", "—", "appsettings.json:44"]
+          ]
+        },
+        {
+          "type": "facts",
+          "title": "Факты о конфигурации",
+          "filter": { "type": "config-flags" }
+        }
+      ]
+    },
+    {
+      "id": "gotchas",
+      "title": "Грабли",
+      "icon": "alert",
+      "blocks": [
+        {
+          "type": "markdown",
+          "md": "## Грабли и неочевидности\n\nТо, обо что спотыкаются новые люди и агенты. Сгруппировано по статусу: подтверждённое человеком — сверху."
+        },
+        {
+          "type": "html",
+          "html": "<div class=\"card\" style=\"border-left:3px solid var(--warning); display:flex; gap:12px; align-items:flex-start;\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"var(--warning)\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\" style=\"flex-shrink:0; margin-top:2px;\"><path d=\"m21.73 18-8-14a2 2 0 0 0-3.46 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z\"/><path d=\"M12 9v4\"/><path d=\"M12 17h.01\"/></svg><div><strong>Перед любым рефакторингом событий</strong> — перечитайте факт про синхронную доставку: консюмеры исполняются в транзакции публикатора, и «безобидное» замедление консюмера удлиняет каждую команду. Обходной путь до внедрения outbox: короткие таймауты у всего, что зовётся из консюмеров.</div></div>"
+        },
+        {
+          "type": "facts",
+          "title": "Все грабли",
+          "filter": { "type": "gotchas" },
+          "group_by": "status"
+        }
+      ]
+    }
+  ]
+}
