@@ -58,18 +58,25 @@ active ──(код разошёлся / superseded / отозван)──► 
 человеку. Комментарии человека из ревью — в `human_notes`: они едут в контекст будущих агентов
 вместе с фактом и часто ценнее самого statement.
 
-## Журналы — observability
+## След работы: что пишет раннер, а что память
 
-```json
-{ "log": "memory_read",   "task": "issue-123", "facts": ["fact:eg-0042"], "at": "..." }
-{ "log": "memory_write",  "task": "issue-123", "created": ["fact:eg-0090"], "staled": ["fact:eg-0042"], "at": "..." }
-{ "log": "memory_review", "task": "build-1", "approved": ["fact:eg-0042"], "auto_approved": ["fact:eg-0001"], "rejected": ["fact:mg-0004"], "commented": ["fact:eg-0002"], "at": "..." }
-```
+xmemory ведёт свою инфраструктурную телеметрию (write_id, статусы асинхронных записей, lineage в
+их консоли), но она про API-вызовы, а не про наши задачи: в полезной нагрузке записи нет ничего,
+что связало бы мутацию с `issue-123`. Через CLI её тоже не достать — команд истории чтений/записей
+нет, только `schema migrations list`. Поэтому разделяем:
 
-Журнальные записи ссылаются на факты **только явными id** — упоминание прозой («заstale-ил
-четыре факта») рождает в xmemory объекты-призраки. В режиме строительства журнал начинается с
-memory_review/memory_write; memory_read появляется в режиме использования. Журналы отвечают на
-вопросы демо и эвала: «какой факт в какую задачу попал», «что изменилось после прогона».
+- **Метрики и трассировка прогона** — токены, тул-колы, время, что именно уехало в контекст, какие
+  мутации ушли — пишет **раннер эвала**, в артефакты прогона. Это одинаково работает и в прогоне
+  без памяти, а значит прогоны сравнимы; квоту xmemory это не жжёт.
+- **В памяти остаётся только то, чего раннер знать не может** — доменная связь «задача ↔ факты»:
+  один объект `Task` со связями `used_facts` / `produced_facts`. По нему обходом графа достаётся
+  цепочка «факт → задача → изменение» — то, что показываем в демо и на что вешаем attribution.
+
+Связи — **только по `fact_id`**, никогда прозой: упоминание «заstale-ил четыре факта» текстом
+рождает в xmemory объекты-призраки.
+
+Решения ревью отдельным объектом не журналируются — они уже поля факта: `status`, `auto_approved`,
+`status_reason`, `human_notes`.
 
 ## Адаптер: xmemory (первичный)
 
@@ -198,8 +205,8 @@ xmemcli write "<текст>" --scope Fact:fact_id=fact:eg-0042 --no-wait   # + x
 
 ### 3. Журналы, снапшоты, практика
 
-- Журналы — сущности со связями на факты и задачи: цепочка «факт → чтение → задача → изменение»
-  должна доставаться обходом графа.
+- Цепочка «факт → задача → изменение» должна доставаться обходом графа: объект `Task` со связями
+  на факты, а не текстовое описание.
 - Снапшоты для эвалов: отдельный инстанс/неймспейс на конфигурацию эксперимента.
 - Креды ищутся от текущей директории вверх — зови `xmemcli` из директории, где лежит
   `.xmemrc.json` (иначе «Not logged in»), а не из `/tmp`.
@@ -236,10 +243,9 @@ Objects:
   status (candidate/active/stale); provenance (declared/observed/inferred);
   type (slice); subject -> Entity; object -> Entity (optional); relation;
   auto_approved (bool); human_notes; question; source; superseded_by -> Fact; status_reason; created_at.
-- JournalEntry: primary key entry_id; log (memory_read/memory_write/memory_review); task; at;
-  explicit relations to Fact by fact_id: read_facts, created_facts, staled_facts, approved_facts,
-  auto_approved_facts, rejected_facts, commented_facts. Journal entries reference facts only via
-  these relations, never by textual description." -o schema.yml
+- Task: primary key task_id (issue/PR ref); title; at; explicit relations to Fact by fact_id:
+  used_facts (read into context), produced_facts (created or staled by this task). Tasks reference
+  facts only via these relations, never by textual description." -o schema.yml
 $XMEMCLI xmd validate schema.yml
 ```
 
