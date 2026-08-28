@@ -7,31 +7,65 @@
 ни витрину, ни память: репо — чужая территория, и вопрос «коммитить или в .gitignore» просто
 не должен возникать.
 
-## Мини-ядро факта — единственное, что фиксировано
+## Структура: объект на срез, а не одна таблица «факт»
 
-Схему памяти проектирует **агент под конкретный проект**, и она эволюционирует вместе с памятью.
-Запрещено заранее решать за будущего агента, как хранить данные. Фиксирован только минимум, на
-котором держатся ревью-цикл, авто-подтверждение и вьювер:
+**Память — реляционная база под выбранные срезы, а не заметки с тегом типа.** Один общий тип
+`Fact` со строкой `statement` и полем `type` — это markdown в облаке: в факт среза `module-graph`
+можно записать что угодно про события, никто не остановит, а спросить «кто консюмит
+`order.created`» получится только текстовым поиском по предложению.
+
+Поэтому на каждый выбранный срез агент заводит **свой тип объекта** со своими обязательными полями
+и связями на `Entity`:
+
+```
+EventProduction:   fact_id · producer -> Entity · event -> Entity · trigger · <ядро>
+EventSubscription: fact_id · event -> Entity · consumer -> Entity · delivery (sync|async)
+                   · ordering · on_failure · <ядро>
+ModuleDependency:  fact_id · from -> Entity · to -> Entity · kind (import|di|config|arch-rule)
+                   · declared_rule (bool) · is_cycle (bool) · <ядро>
+```
+
+Что это даёт, чего не даёт общий `Fact`:
+
+- **Границы среза держит схема, а не дисциплина агента.** В `ModuleDependency` нельзя положить
+  событие: нет поля.
+- **Вопрос агента становится обходом связей**, а не текстовым поиском: «кто консюмит
+  `order.created`» — это `EventSubscription` по `event`, с гарантированным ответом.
+- **Пропуск виден.** Нет `on_failure` — поле пустое и это заметно; в предложении отсутствие
+  не видно никак.
+- **Новый срез добавляется дешевле.** Новый тип объекта — аддитивное изменение схемы, проходит
+  как есть. Новое значение в `enum type` общего `Fact` — **не**аддитивное, упирается в
+  `non_additive_change_requires_plan` и требует миграционного плана. Типизация не усложняет
+  эволюцию, а упрощает её.
+
+Срезов человек выбирает не больше трёх, так что в инстансе живёт 3–5 предметных типов плюс
+`Entity` и `Task` — это маленькая понятная схема под конкретный проект, а не универсальный
+конструктор.
+
+## Ядро ревью-цикла — повторяется в каждом типе
+
+Ревью, авто-подтверждение, устаревание и вьювер работают одинаково для всех срезов, поэтому эти
+поля обязаны быть в **каждом** предметном типе:
 
 ```json
 {
-  "id": "fact:eg-0042",
+  "fact_id": "fact:eg-0042",
   "statement": "Orders публикует order.created при успешном создании заказа",
   "evidence": [{ "kind": "code", "ref": "internal/orders/service.go:87" }],
   "confidence": "high | medium | low",
-  "status": "candidate | active | stale"
+  "status": "candidate | active | stale",
+  "provenance": "declared | observed | inferred"
 }
 ```
 
-Рекомендуемые (шелл UI их понимает, агенты читают): `provenance` (`declared` — из декларативного
-артефакта, `observed` — выведено из кода, `inferred` — интерпретация), `type` (срез), `subject`/
-`relation`/`object` (реляционность — смысл памяти: связи «событие → владелец → таблица» дают
-кратную пользу), `human_notes[]`, `question`, `source` (`extraction|task|human`), `superseded_by`,
-`status_reason`, `auto_approved`, `created_at`. Всё остальное — свободные поля под проект:
-`delivery: "sync"`, `env_diff`, что угодно. UI покажет их в деталях карточки как есть.
+Плюс `auto_approved`, `human_notes[]`, `question`, `source` (`extraction|task|human`),
+`superseded_by`, `status_reason`, `created_at`.
 
-Id факта несёт префикс среза (`eg`, `mg`, …) — параллельное извлечение не коллидирует.
-`statement` — одно предложение ≤ 200 символов; детали в evidence и свободных полях.
+`statement` здесь — **человекочитаемая подпись, производная от полей**, а не место хранения.
+Проверка простая: если `statement` несёт то, чего нет в полях объекта, — значит не хватает поля,
+и его надо завести, а не дописать в предложение.
+
+`fact_id` несёт префикс среза (`eg`, `mg`, …) — параллельное извлечение не коллидирует.
 Факт без evidence не существует.
 
 ## Жизненный цикл и авто-подтверждение
@@ -95,8 +129,9 @@ xmemcli auth login                 # иначе: печатает ссылку �
 ### 1. Схема
 
 Схему агент проектирует сам под выбранные срезы и **дорабатывает при эволюции** (новые срезы, поля,
-типы связей — не ломая старое). Не сваливать всё в один тип «текстовая заметка» — реляционность и
-есть смысл. **Стабильные первичные ключи обязательны**: `entity_id`, `fact_id`, `entry_id`
+типы связей — не ломая старое). **Тип объекта на срез** со своими полями и связями — см. начало
+протокола; не сваливать всё в один тип «факт со строкой» — реляционность и есть смысл. Новый срез
+добавляется новым объектом (аддитивно), а не новым значением enum (не аддитивно). **Стабильные первичные ключи обязательны**: `entity_id`, `fact_id`, `entry_id`
 (`xmd generate` их не гарантирует — проверь и допиши). Ключ — единственный способ адресовать
 объект: строку без ключа потом нельзя ни исправить, ни удалить, а повторное извлечение плодит
 дубликаты.
@@ -153,12 +188,13 @@ curl -s -X POST "https://api.xmemory.ai/instances/$INSTANCE/write" \
   {"object_mutation": {"object_type": "Entity", "create": {
      "key": {"entity_id": "sp-registry"},
      "values": {"kind": "collector", "name": "sp-registry"}}}},
-  {"object_mutation": {"object_type": "Fact", "create": {
-     "key": {"fact_id": "fact:pg-0002"},
-     "values": {"statement": "…", "confidence": "high", "status": "candidate"}}}},
-  {"relation_mutation": {"relation_type": "fact_subject", "create": {
-     "endpoints": [{"object_name": "fact", "key": {"fact_id": "fact:pg-0002"}},
-                   {"object_name": "subject_entity", "key": {"entity_id": "sp-registry"}}]}}}
+  {"object_mutation": {"object_type": "EventProduction", "create": {
+     "key": {"fact_id": "fact:eg-0002"},
+     "values": {"trigger": "успешное создание заказа", "statement": "…",
+                "confidence": "high", "status": "candidate", "provenance": "observed"}}}},
+  {"relation_mutation": {"relation_type": "producer", "create": {
+     "endpoints": [{"object_name": "fact", "key": {"fact_id": "fact:eg-0002"}},
+                   {"object_name": "producer_entity", "key": {"entity_id": "sp-registry"}}]}}}
 ]}
 ```
 Мутации применяются по порядку и поздние видят созданное ранними — сущности, факты и связи уезжают
@@ -224,7 +260,7 @@ xmemcli write "<текст>" --scope Fact:fact_id=fact:eg-0042 --no-wait   # + x
 
 ```bash
 xmemcli read "Перечисли entity_id всех Entity" --read-mode raw
-xmemcli read "Для каждой связи fact_subject верни fact_id факта и entity_id субъекта" --read-mode raw
+xmemcli read "Для каждого EventSubscription верни fact_id, event и consumer" --read-mode raw
 ```
 Формулируй запрос через имена полей: на «верни fact_id и entity_id» reader может отдать внутренние
 uuid, и дифф развалится на ровном месте — сначала посмотри `columns`, потом сравнивай. Поверх
@@ -232,20 +268,28 @@ uuid, и дифф развалится на ровном месте — снач
 («собираюсь добавить доменное событие — что нужно знать»); совпадение статусов с решениями
 человека. Расхождение — чини до конца сессии.
 
-Затравка (проверена на живом инстансе):
+Затравка (общая форма проверена на живом инстансе; типизация по срезам — новая, прогнать при первом инстансе):
 
 ```bash
 $XMEMCLI xmd generate "Memory for reverse-engineered technical facts about a software project.
+One object type per selected slice, not a single generic fact table.
+Shared review core, repeated as fields on EVERY slice object:
+  fact_id (primary key, slice-prefixed, e.g. 'fact:eg-0042'); statement (<=200 chars,
+  human-readable label derived from the typed fields); evidence (list of 'file:line' or commit
+  refs); confidence (high/medium/low); status (candidate/active/stale);
+  provenance (declared/observed/inferred); auto_approved (bool); human_notes; question;
+  source (extraction/task/human); superseded_by -> same type; status_reason; created_at.
 Objects:
-- Entity: primary key entity_id; kind (module, event, endpoint, table, external_system, flag, ...); name; attrs.
-- Fact: primary key fact_id (slice-prefixed, e.g. 'fact:eg-0042'); statement (<=200 chars);
-  evidence (list of 'file:line' or commit refs); confidence (high/medium/low);
-  status (candidate/active/stale); provenance (declared/observed/inferred);
-  type (slice); subject -> Entity; object -> Entity (optional); relation;
-  auto_approved (bool); human_notes; question; source; superseded_by -> Fact; status_reason; created_at.
-- Task: primary key task_id (issue/PR ref); title; at; explicit relations to Fact by fact_id:
-  used_facts (read into context), produced_facts (created or staled by this task). Tasks reference
-  facts only via these relations, never by textual description." -o schema.yml
+- Entity: primary key entity_id; kind (module, event, endpoint, table, external_system, flag, ...);
+  name; attrs.
+- Task: primary key task_id (issue/PR ref); title; at; relations to slice objects by fact_id:
+  used_facts, produced_facts. References facts only via these relations, never as text.
+- <one object per chosen slice, typed>, e.g.:
+  EventProduction: producer -> Entity; event -> Entity; trigger; + review core.
+  EventSubscription: event -> Entity; consumer -> Entity; delivery (sync/async); ordering;
+    on_failure; + review core.
+  ModuleDependency: from -> Entity; to -> Entity; kind (import/di/config/arch-rule);
+    declared_rule (bool); is_cycle (bool); + review core." -o schema.yml
 $XMEMCLI xmd validate schema.yml
 ```
 
