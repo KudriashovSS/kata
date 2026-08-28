@@ -14,33 +14,31 @@
 можно записать что угодно про события, никто не остановит, а спросить «кто консюмит
 `order.created`» получится только текстовым поиском по предложению.
 
-Поэтому на каждый выбранный срез агент заводит **свой тип объекта** со своими обязательными полями
-и связями на `Entity`:
+**Схему проектирует агент под конкретный проект** — это не место, где протокол диктует поля.
+Протокол фиксирует только требования, которым схема обязана удовлетворять:
 
-```
-EventProduction:   fact_id · producer -> Entity · event -> Entity · trigger · <ядро>
-EventSubscription: fact_id · event -> Entity · consumer -> Entity · delivery (sync|async)
-                   · ordering · on_failure · <ядро>
-ModuleDependency:  fact_id · from -> Entity · to -> Entity · kind (import|di|config|arch-rule)
-                   · declared_rule (bool) · is_cycle (bool) · <ядро>
-```
+1. **Тип объекта на каждый выбранный срез.** Не общая таблица с полем «тип»: у `module-graph`
+   свой объект, у `event-graph` свой.
+2. **Предметные данные — в полях и связях**, а не в предложении. Проверка: если `statement`
+   несёт то, чего нет в полях, — не хватает поля.
+3. **Связи ведут на сущности, а не на строки.** Участники факта — ссылки на `Entity` по ключу.
+4. **Всё, что каталог называет обязательным для среза, выразимо полем.** Для `event-graph` это
+   семантика доставки, для `module-graph` — вид и направление зависимости: значит под них есть
+   поля, а не абзац текста.
+5. **Ядро ревью-цикла — в каждом типе** (ниже): иначе ревью, авто-подтверждение и устаревание
+   перестают работать единообразно.
+6. **Стабильные ключи** у всего: объект без ключа нельзя ни поправить, ни удалить.
 
-Что это даёт, чего не даёт общий `Fact`:
+Приёмка схемы — один вопрос: **любой вопрос, ради которого срез выбирали, отвечается фильтром по
+полю или обходом связи, а не поиском по тексту.** Если для ответа приходится читать `statement` —
+схема ещё не реляционная, дорабатывай.
 
-- **Границы среза держит схема, а не дисциплина агента.** В `ModuleDependency` нельзя положить
-  событие: нет поля.
-- **Вопрос агента становится обходом связей**, а не текстовым поиском: «кто консюмит
-  `order.created`» — это `EventSubscription` по `event`, с гарантированным ответом.
-- **Пропуск виден.** Нет `on_failure` — поле пустое и это заметно; в предложении отсутствие
-  не видно никак.
-- **Новый срез добавляется дешевле.** Новый тип объекта — аддитивное изменение схемы, проходит
-  как есть. Новое значение в `enum type` общего `Fact` — **не**аддитивное, упирается в
-  `non_additive_change_requires_plan` и требует миграционного плана. Типизация не усложняет
-  эволюцию, а упрощает её.
+Почему это ещё и дешевле в эволюции: новый срез — новый тип объекта, **аддитивное** изменение
+схемы, проходит как есть. Новое значение в `enum type` общего `Fact` — **не**аддитивное, упирается
+в `non_additive_change_requires_plan` и требует миграционного плана.
 
 Срезов человек выбирает не больше трёх, так что в инстансе живёт 3–5 предметных типов плюс
-`Entity` и `Task` — это маленькая понятная схема под конкретный проект, а не универсальный
-конструктор.
+`Entity` и `Task` — маленькая схема под конкретный проект, а не универсальный конструктор.
 
 ## Ядро ревью-цикла — повторяется в каждом типе
 
@@ -129,9 +127,9 @@ xmemcli auth login                 # иначе: печатает ссылку �
 ### 1. Схема
 
 Схему агент проектирует сам под выбранные срезы и **дорабатывает при эволюции** (новые срезы, поля,
-типы связей — не ломая старое). **Тип объекта на срез** со своими полями и связями — см. начало
-протокола; не сваливать всё в один тип «факт со строкой» — реляционность и есть смысл. Новый срез
-добавляется новым объектом (аддитивно), а не новым значением enum (не аддитивно). **Стабильные первичные ключи обязательны**: `entity_id`, `fact_id`, `entry_id`
+типы связей — не ломая старое). Требования к ней — в начале протокола; главное: тип объекта на срез,
+предметные поля вместо строки, связи на сущности. Новый срез добавляется новым объектом
+(аддитивно), а не новым значением enum (не аддитивно). **Стабильные первичные ключи обязательны**: `entity_id`, `fact_id`, `entry_id`
 (`xmd generate` их не гарантирует — проверь и допиши). Ключ — единственный способ адресовать
 объект: строку без ключа потом нельзя ни исправить, ни удалить, а повторное извлечение плодит
 дубликаты.
@@ -188,13 +186,13 @@ curl -s -X POST "https://api.xmemory.ai/instances/$INSTANCE/write" \
   {"object_mutation": {"object_type": "Entity", "create": {
      "key": {"entity_id": "sp-registry"},
      "values": {"kind": "collector", "name": "sp-registry"}}}},
-  {"object_mutation": {"object_type": "EventProduction", "create": {
+  {"object_mutation": {"object_type": "<SliceObject>", "create": {
      "key": {"fact_id": "fact:eg-0002"},
-     "values": {"trigger": "успешное создание заказа", "statement": "…",
+     "values": {"<поле среза>": "…", "statement": "…",
                 "confidence": "high", "status": "candidate", "provenance": "observed"}}}},
-  {"relation_mutation": {"relation_type": "producer", "create": {
+  {"relation_mutation": {"relation_type": "<связь среза>", "create": {
      "endpoints": [{"object_name": "fact", "key": {"fact_id": "fact:eg-0002"}},
-                   {"object_name": "producer_entity", "key": {"entity_id": "sp-registry"}}]}}}
+                   {"object_name": "entity", "key": {"entity_id": "sp-registry"}}]}}}
 ]}
 ```
 Мутации применяются по порядку и поздние видят созданное ранними — сущности, факты и связи уезжают
@@ -260,7 +258,7 @@ xmemcli write "<текст>" --scope Fact:fact_id=fact:eg-0042 --no-wait   # + x
 
 ```bash
 xmemcli read "Перечисли entity_id всех Entity" --read-mode raw
-xmemcli read "Для каждого EventSubscription верни fact_id, event и consumer" --read-mode raw
+xmemcli read "Для каждого объекта <срез> верни fact_id и ключи связанных сущностей" --read-mode raw
 ```
 Формулируй запрос через имена полей: на «верни fact_id и entity_id» reader может отдать внутренние
 uuid, и дифф развалится на ровном месте — сначала посмотри `columns`, потом сравнивай. Поверх
@@ -272,24 +270,20 @@ uuid, и дифф развалится на ровном месте — снач
 
 ```bash
 $XMEMCLI xmd generate "Memory for reverse-engineered technical facts about a software project.
-One object type per selected slice, not a single generic fact table.
-Shared review core, repeated as fields on EVERY slice object:
-  fact_id (primary key, slice-prefixed, e.g. 'fact:eg-0042'); statement (<=200 chars,
-  human-readable label derived from the typed fields); evidence (list of 'file:line' or commit
-  refs); confidence (high/medium/low); status (candidate/active/stale);
-  provenance (declared/observed/inferred); auto_approved (bool); human_notes; question;
-  source (extraction/task/human); superseded_by -> same type; status_reason; created_at.
-Objects:
+Design one object type per selected slice — typed domain fields and relations to entities, never a
+single generic fact table with a 'type' field. Slice objects and their fields follow the slices the
+user picked and what this repository actually has.
+Every slice object repeats the review core: fact_id (primary key, slice-prefixed);
+statement (<=200 chars, human-readable label derived from the typed fields); evidence (list of
+'file:line' or commit refs); confidence (high/medium/low); status (candidate/active/stale);
+provenance (declared/observed/inferred); auto_approved (bool); human_notes; question;
+source (extraction/task/human); superseded_by; status_reason; created_at.
+Always present, besides the slice objects:
 - Entity: primary key entity_id; kind (module, event, endpoint, table, external_system, flag, ...);
-  name; attrs.
+  name; attrs. Slice objects reference entities by this key.
 - Task: primary key task_id (issue/PR ref); title; at; relations to slice objects by fact_id:
   used_facts, produced_facts. References facts only via these relations, never as text.
-- <one object per chosen slice, typed>, e.g.:
-  EventProduction: producer -> Entity; event -> Entity; trigger; + review core.
-  EventSubscription: event -> Entity; consumer -> Entity; delivery (sync/async); ordering;
-    on_failure; + review core.
-  ModuleDependency: from -> Entity; to -> Entity; kind (import/di/config/arch-rule);
-    declared_rule (bool); is_cycle (bool); + review core." -o schema.yml
+Selected slices: <перечисли срезы и что по каждому обязано быть выразимо полем>." -o schema.yml
 $XMEMCLI xmd validate schema.yml
 ```
 
