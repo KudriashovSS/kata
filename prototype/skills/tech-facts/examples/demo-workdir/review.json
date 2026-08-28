@@ -1,0 +1,362 @@
+{
+  "project": "services-platform",
+  "batches": [
+    {
+      "batch": "module-graph",
+      "title": "Модули и зависимости",
+      "status": "ready",
+      "note": "11 фактов авто-подтверждены, 3 ждут решения — извлекалось параллельно с графом событий",
+      "diagram": {
+        "mermaid": "flowchart LR\n  Api --> Orders\n  Api --> Billing\n  Orders -- contracts --> BillingContracts[Billing.Contracts]\n  Billing -- contracts --> OrdersContracts[Orders.Contracts]\n  Pricing --> Catalog\n  Orders --> BuildingBlocks\n  Billing --> BuildingBlocks"
+      },
+      "facts": [
+        {
+          "id": "fact:mg-0001",
+          "statement": "Orders ссылается на Billing только через Billing.Contracts — прямой ссылки на реализацию нет",
+          "evidence": [
+            {
+              "kind": "config",
+              "ref": "src/Modules/Orders/Orders.Application.csproj:14"
+            }
+          ],
+          "confidence": "high",
+          "status": "candidate",
+          "auto_approved": true,
+          "question": null,
+          "provenance": "declared"
+        },
+        {
+          "id": "fact:mg-0002",
+          "statement": "BuildingBlocks — общий модуль: на него ссылаются все пять модулей",
+          "evidence": [
+            {
+              "kind": "config",
+              "ref": "src/Modules/*/*.csproj"
+            }
+          ],
+          "confidence": "high",
+          "status": "candidate",
+          "auto_approved": true,
+          "question": null,
+          "provenance": "declared"
+        },
+        {
+          "id": "fact:mg-0003",
+          "statement": "Pricing и Catalog связаны в обе стороны — цикл на уровне Contracts",
+          "evidence": [
+            {
+              "kind": "config",
+              "ref": "src/Modules/Pricing/Pricing.Application.csproj:11"
+            },
+            {
+              "kind": "config",
+              "ref": "src/Modules/Catalog/Catalog.Application.csproj:9"
+            }
+          ],
+          "confidence": "medium",
+          "status": "candidate",
+          "auto_approved": false,
+          "question": "Цикл Pricing ↔ Catalog — это осознанное решение или технический долг?",
+          "provenance": "observed"
+        },
+        {
+          "id": "fact:mg-0004",
+          "statement": "Граница модуля Notifications размыта: Api напрямую дёргает NotificationSender, минуя контракт",
+          "evidence": [
+            {
+              "kind": "code",
+              "ref": "src/Api/Endpoints/OrdersEndpoints.cs:132"
+            }
+          ],
+          "confidence": "medium",
+          "status": "candidate",
+          "auto_approved": false,
+          "question": null,
+          "provenance": "observed"
+        },
+        {
+          "id": "fact:mg-0005",
+          "statement": "Архитектурные правила зафиксированы в тестах: Domain не должен зависеть от Infrastructure",
+          "evidence": [
+            {
+              "kind": "code",
+              "ref": "tests/Architecture.Tests/DependencyRulesTests.cs:18"
+            }
+          ],
+          "confidence": "low",
+          "status": "candidate",
+          "auto_approved": false,
+          "question": "Правило есть в тестах, но два модуля в исключениях — так задумано?",
+          "provenance": "declared"
+        }
+      ]
+    },
+    {
+      "batch": "event-graph",
+      "title": "Граф событий",
+      "status": "ready",
+      "note": "9 фактов авто-подтверждены (high + evidence), 5 ждут вашего решения — из них 2 с открытым вопросом",
+      "diagram": {
+        "mermaid": "flowchart LR\n  Orders -- publishes --> ev_created[order.created]\n  ev_created -- notifies --> Billing\n  ev_created -- notifies --> Notifications\n  Orders -- publishes --> ev_cancelled[order.cancelled]\n  ev_cancelled -- notifies --> Billing\n  Billing -- publishes --> ev_invoice[invoice.issued]\n  ev_invoice -- notifies --> Notifications\n  Billing -- publishes --> ev_payfail[payment.failed]\n  ev_payfail -- notifies --> Orders\n  Pricing -- publishes --> ev_price[price.updated]\n  ev_price -- notifies --> Catalog\n  ev_price -- notifies --> Orders"
+      },
+      "facts": [
+        {
+          "id": "fact:eg-0001",
+          "statement": "Orders публикует order.created при успешном создании заказа",
+          "evidence": [
+            {
+              "kind": "code",
+              "ref": "src/Modules/Orders/Application/CreateOrderHandler.cs:87"
+            }
+          ],
+          "confidence": "high",
+          "status": "candidate",
+          "auto_approved": true,
+          "question": null,
+          "publisher": "Orders",
+          "event": "order.created",
+          "delivery": "sync"
+        },
+        {
+          "id": "fact:eg-0002",
+          "statement": "Billing подписан на order.created и создаёт черновик счёта",
+          "evidence": [
+            {
+              "kind": "code",
+              "ref": "src/Modules/Billing/Application/OrderCreatedConsumer.cs:24"
+            }
+          ],
+          "confidence": "high",
+          "status": "candidate",
+          "auto_approved": true,
+          "question": null,
+          "consumer": "Billing",
+          "event": "order.created",
+          "delivery": "sync"
+        },
+        {
+          "id": "fact:eg-0003",
+          "statement": "Notifications подписан на order.created и шлёт письмо-подтверждение",
+          "evidence": [
+            {
+              "kind": "code",
+              "ref": "src/Modules/Notifications/Application/OrderCreatedConsumer.cs:19"
+            }
+          ],
+          "confidence": "high",
+          "status": "candidate",
+          "auto_approved": true,
+          "question": null,
+          "consumer": "Notifications",
+          "event": "order.created",
+          "delivery": "sync"
+        },
+        {
+          "id": "fact:eg-0004",
+          "statement": "Orders публикует order.cancelled при отмене заказа человеком или таймаутом оплаты",
+          "evidence": [
+            {
+              "kind": "code",
+              "ref": "src/Modules/Orders/Application/CancelOrderHandler.cs:41"
+            },
+            {
+              "kind": "code",
+              "ref": "src/Modules/Orders/Infrastructure/PaymentTimeoutJob.cs:33"
+            }
+          ],
+          "confidence": "high",
+          "status": "candidate",
+          "auto_approved": true,
+          "question": null,
+          "publisher": "Orders",
+          "event": "order.cancelled",
+          "delivery": "sync"
+        },
+        {
+          "id": "fact:eg-0005",
+          "statement": "Billing подписан на order.cancelled и аннулирует неоплаченный счёт",
+          "evidence": [
+            {
+              "kind": "code",
+              "ref": "src/Modules/Billing/Application/OrderCancelledConsumer.cs:22"
+            }
+          ],
+          "confidence": "high",
+          "status": "candidate",
+          "auto_approved": true,
+          "question": null,
+          "consumer": "Billing",
+          "event": "order.cancelled",
+          "delivery": "sync"
+        },
+        {
+          "id": "fact:eg-0006",
+          "statement": "Billing публикует invoice.issued после выставления счёта",
+          "evidence": [
+            {
+              "kind": "code",
+              "ref": "src/Modules/Billing/Application/IssueInvoiceHandler.cs:64"
+            }
+          ],
+          "confidence": "high",
+          "status": "candidate",
+          "auto_approved": true,
+          "question": null,
+          "publisher": "Billing",
+          "event": "invoice.issued",
+          "delivery": "sync"
+        },
+        {
+          "id": "fact:eg-0007",
+          "statement": "Notifications подписан на invoice.issued и шлёт счёт клиенту на e-mail",
+          "evidence": [
+            {
+              "kind": "code",
+              "ref": "src/Modules/Notifications/Application/InvoiceIssuedConsumer.cs:17"
+            }
+          ],
+          "confidence": "high",
+          "status": "candidate",
+          "auto_approved": true,
+          "question": null,
+          "consumer": "Notifications",
+          "event": "invoice.issued",
+          "delivery": "sync"
+        },
+        {
+          "id": "fact:eg-0008",
+          "statement": "Pricing публикует price.updated при пересчёте прайс-листа",
+          "evidence": [
+            {
+              "kind": "code",
+              "ref": "src/Modules/Pricing/Application/RecalculatePriceListHandler.cs:112"
+            }
+          ],
+          "confidence": "high",
+          "status": "candidate",
+          "auto_approved": true,
+          "question": null,
+          "publisher": "Pricing",
+          "event": "price.updated",
+          "delivery": "sync"
+        },
+        {
+          "id": "fact:eg-0009",
+          "statement": "Catalog подписан на price.updated и обновляет витринные цены",
+          "evidence": [
+            {
+              "kind": "code",
+              "ref": "src/Modules/Catalog/Application/PriceUpdatedConsumer.cs:28"
+            }
+          ],
+          "confidence": "high",
+          "status": "candidate",
+          "auto_approved": true,
+          "question": null,
+          "consumer": "Catalog",
+          "event": "price.updated",
+          "delivery": "sync"
+        },
+        {
+          "id": "fact:eg-0010",
+          "statement": "Billing публикует payment.failed при отказе платёжного шлюза, Orders по нему переводит заказ в on-hold",
+          "evidence": [
+            {
+              "kind": "code",
+              "ref": "src/Modules/Billing/Infrastructure/PaymentGatewayCallbackController.cs:56"
+            },
+            {
+              "kind": "code",
+              "ref": "src/Modules/Orders/Application/PaymentFailedConsumer.cs:31"
+            }
+          ],
+          "confidence": "medium",
+          "status": "candidate",
+          "auto_approved": false,
+          "question": null,
+          "publisher": "Billing",
+          "event": "payment.failed",
+          "delivery": "sync"
+        },
+        {
+          "id": "fact:eg-0011",
+          "statement": "Orders подписан на price.updated, но обработчик только пишет warning в лог — пересчёта открытых заказов нет",
+          "evidence": [
+            {
+              "kind": "code",
+              "ref": "src/Modules/Orders/Application/PriceUpdatedConsumer.cs:15"
+            }
+          ],
+          "confidence": "medium",
+          "status": "candidate",
+          "auto_approved": false,
+          "question": null,
+          "consumer": "Orders",
+          "event": "price.updated",
+          "delivery": "sync"
+        },
+        {
+          "id": "fact:eg-0012",
+          "statement": "Все события доставляются синхронно в той же транзакции, что и команда: упал консюмер — откатывается вся операция",
+          "evidence": [
+            {
+              "kind": "code",
+              "ref": "src/BuildingBlocks/Events/InProcessEventBus.cs:44"
+            },
+            {
+              "kind": "code",
+              "ref": "src/BuildingBlocks/Events/UnitOfWorkBehavior.cs:29"
+            }
+          ],
+          "confidence": "medium",
+          "status": "candidate",
+          "auto_approved": false,
+          "question": null,
+          "delivery": "sync"
+        },
+        {
+          "id": "fact:eg-0013",
+          "statement": "customer.registered объявлено в Contracts, но живого публикатора не нашлось — возможно, событие публикуется только из legacy-скрипта импорта",
+          "evidence": [
+            {
+              "kind": "code",
+              "ref": "src/Contracts/Customers/CustomerRegistered.cs:8"
+            }
+          ],
+          "confidence": "low",
+          "status": "candidate",
+          "auto_approved": false,
+          "question": "Событие customer.registered ещё живое? Публикатор в основном коде не найден.",
+          "event": "customer.registered"
+        },
+        {
+          "id": "fact:eg-0014",
+          "statement": "Notifications, судя по коду ретраев, задумывался как асинхронный консюмер, но фактически вызывается синхронно — SMTP-таймаут блокирует создание заказа",
+          "evidence": [
+            {
+              "kind": "code",
+              "ref": "src/Modules/Notifications/Infrastructure/SmtpSender.cs:71"
+            },
+            {
+              "kind": "code",
+              "ref": "src/BuildingBlocks/Events/InProcessEventBus.cs:52"
+            }
+          ],
+          "confidence": "low",
+          "status": "candidate",
+          "auto_approved": false,
+          "question": "Правда ли SMTP-таймаут может завалить создание заказа? Похоже на прод-инцидент, подтвердите или опровергните.",
+          "consumer": "Notifications",
+          "delivery": "sync"
+        }
+      ]
+    },
+    {
+      "batch": "data-ownership",
+      "title": "Владение данными",
+      "status": "extracting",
+      "note": "Агент читает миграции и ORM-маппинги — 41 таблица в 5 схемах",
+      "facts": []
+    }
+  ]
+}

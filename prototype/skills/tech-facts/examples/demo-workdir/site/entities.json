@@ -1,0 +1,14 @@
+[
+  { "id": "module:orders", "kind": "module", "name": "Orders", "path": "src/Modules/Orders" },
+  { "id": "module:billing", "kind": "module", "name": "Billing", "path": "src/Modules/Billing" },
+  { "id": "module:pricing", "kind": "module", "name": "Pricing", "path": "src/Modules/Pricing" },
+  { "id": "module:catalog", "kind": "module", "name": "Catalog", "path": "src/Modules/Catalog" },
+  { "id": "module:notifications", "kind": "module", "name": "Notifications", "path": "src/Modules/Notifications" },
+  { "id": "event:order.created", "kind": "event", "name": "order.created", "declared_in": "src/Contracts/Orders/OrderCreated.cs" },
+  { "id": "event:order.cancelled", "kind": "event", "name": "order.cancelled", "declared_in": "src/Contracts/Orders/OrderCancelled.cs" },
+  { "id": "event:invoice.issued", "kind": "event", "name": "invoice.issued", "declared_in": "src/Contracts/Billing/InvoiceIssued.cs" },
+  { "id": "event:payment.failed", "kind": "event", "name": "payment.failed", "declared_in": "src/Contracts/Billing/PaymentFailed.cs" },
+  { "id": "event:price.updated", "kind": "event", "name": "price.updated", "declared_in": "src/Contracts/Pricing/PriceUpdated.cs" },
+  { "id": "external:payment-gateway", "kind": "external", "name": "Платёжный шлюз" },
+  { "id": "external:1c", "kind": "external", "name": "1С" }
+]
