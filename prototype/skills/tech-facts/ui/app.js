@@ -749,7 +749,12 @@ function renderNav() {
     ));
   }
 
-  parts.push(h('div', { class: 'nav-extra', id: 'nav-extra' }));
+  /* Навигация эксплорера живёт в этом контейнере, но кладёт её туда renderExplore() — а он не
+     вызывается, пока не менялся сам сайт. Пересоздать узел пустым — потерять страницы и фильтры
+     на первом же переходе внутри эксплорера, поэтому переносим уже собранный сайдбар. */
+  const extra = h('div', { class: 'nav-extra', id: 'nav-extra' });
+  if (route.section === 'explore' && exploreCtx && exploreCtx.sidebar) extra.appendChild(exploreCtx.sidebar);
+  parts.push(extra);
   navRoot.replaceChildren(...parts);
 }
 
