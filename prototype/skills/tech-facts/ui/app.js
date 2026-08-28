@@ -305,20 +305,29 @@ function renderMarkdown(md) {
         + '</tr></thead><tbody>'
         + body.map(r => `<tr>${r.map(c => `<td>${mdInline(c)}</td>`).join('')}</tr>`).join('')
         + '</tbody></table></div>';
-    } else if (/^[-*]\s+/.test(t)) {
-      let items = '';
-      while (i < lines.length && /^[-*]\s+/.test(lines[i].trim())) {
-        items += `<li>${mdInline(lines[i].trim().replace(/^[-*]\s+/, ''))}</li>`;
+    } else if (/^[-*]\s+/.test(t) || /^\d+\.\s+/.test(t)) {
+      /* Многострочный пункт: строки-продолжения приклеиваются к текущему <li>, иначе список
+         рвался на куски и нумерация каждый раз начиналась заново. */
+      const ordered = /^\d+\.\s+/.test(t);
+      const marker = ordered ? /^\d+\.\s+/ : /^[-*]\s+/;
+      const foreign = ordered ? /^[-*]\s+/ : /^\d+\.\s+/;
+      const start = ordered ? parseInt(t, 10) : 1;
+      const items = [];
+      while (i < lines.length) {
+        const tl = lines[i].trim();
+        if (!tl) {
+          const next = i + 1 < lines.length ? lines[i + 1].trim() : '';
+          if (!marker.test(next)) break;     // пустая строка и дальше не пункт — список кончился
+          i++; continue;
+        }
+        if (marker.test(tl)) { items.push(tl.replace(marker, '')); i++; continue; }
+        if (!items.length || foreign.test(tl) || /^(#{1,4}\s|\||\u0000)/.test(tl)) break;
+        items[items.length - 1] += ' ' + tl;
         i++;
       }
-      html += `<ul>${items}</ul>`;
-    } else if (/^\d+\.\s+/.test(t)) {
-      let items = '';
-      while (i < lines.length && /^\d+\.\s+/.test(lines[i].trim())) {
-        items += `<li>${mdInline(lines[i].trim().replace(/^\d+\.\s+/, ''))}</li>`;
-        i++;
-      }
-      html += `<ol>${items}</ol>`;
+      const tag = ordered ? 'ol' : 'ul';
+      const attr = ordered && start > 1 ? ` start="${start}"` : '';
+      html += `<${tag}${attr}>${items.map(x => `<li>${mdInline(x)}</li>`).join('')}</${tag}>`;
     } else {
       const para = [];
       while (i < lines.length && lines[i].trim() && !/^(#{1,4}\s|[-*]\s|\d+\.\s|\||\u0000)/.test(lines[i].trim())) {
@@ -407,6 +416,8 @@ const navRoot = $('#app-nav');
    Человек ходит между ними сам — сайдбар доступен всегда. */
 const store = { state: null, picker: null, review: null, site: null, decisions: [] };
 let route = { section: null, id: null };
+let rendered = { section: null, id: null };
+let viewDirty = null;           // () => есть ли на экране неотправленный ввод человека
 let pinned = false;             // человек сам выбрал раздел — не выдёргиваем его оттуда
 let bootstrapped = false;       // deep-link из адресной строки учитываем один раз, на старте
 let renderedContentKey = null;
@@ -606,15 +617,22 @@ function contentKey() {
   }
 }
 
-function render() {
+function render(force = false) {
   renderNav();
+  renderMemoryStrip();
   const key = contentKey();
   if (key === renderedContentKey) {
     /* Тот же контент — не съедаем ввод человека; внутри эксплорера меняем только страницу. */
     if (route.section === 'explore') renderExplorePage();
     return;
   }
+  /* Агент перепушил то, что человек прямо сейчас заполняет: молча перерисовать — потерять его
+     работу. Показываем плашку и ждём его решения. */
+  const sameView = route.section === rendered.section && route.id === rendered.id;
+  if (!force && sameView && viewDirty && viewDirty()) { showUpdateBanner(); return; }
   renderedContentKey = key;
+  rendered = { section: route.section, id: route.id };
+  viewDirty = null;
   diagrams = [];
   switch (route.section) {
     case 'picker': renderPicker(); break;
@@ -624,10 +642,41 @@ function render() {
   }
 }
 
+function showUpdateBanner() {
+  const existing = $('#update-banner');
+  if (existing) return;
+  const banner = h('div', { class: 'update-banner', id: 'update-banner' },
+    icon('alert', 15),
+    h('span', {}, 'Агент прислал обновлённую версию этого экрана. Ваши неотправленные решения останутся здесь, пока вы не обновите.'),
+    h('button', { class: 'btn btn-sm btn-primary', onclick: () => { viewDirty = null; render(true); } },
+      'Показать новую версию'),
+  );
+  const wrap = app.querySelector('.stage-wrap') || app;
+  wrap.prepend(banner);
+}
+
+/** Память локальная (xmemory недоступен) — человек должен знать это на каждом экране. */
+function renderMemoryStrip() {
+  const strip = $('#memory-strip');
+  if (!strip) return;
+  const mem = (store.picker && store.picker.memory) || (store.site && store.site.memory) || null;
+  if (!mem || mem.backend === 'xmemory') { strip.hidden = true; strip.replaceChildren(); return; }
+  strip.hidden = false;
+  strip.replaceChildren(
+    icon('alert', 15),
+    h('span', { class: 'm-text' },
+      h('b', {}, mem.title || 'Память сохраняется локально'),
+      mem.note ? ` — ${mem.note}` : ' — xmemory недоступен, факты лягут в файловый fallback',
+    ),
+    mem.location ? h('code', { class: 'm-path' }, mem.location) : null,
+  );
+}
+
 /** Решение отправлено — обновляем состояние (кто отправлен, что дальше) и идём за агентом. */
 async function afterDecision() {
   pinned = false;              // дальше ведёт агент: покажем следующую порцию, как только она готова
   renderedContentKey = null;
+  viewDirty = null;            // ввод уехал — держать экран больше не за что
   await refresh();
 }
 
@@ -889,6 +938,10 @@ function renderPicker() {
     removed: sentSelected ? [...sentSelected].filter(id => !selected.has(id)) : [],
   });
 
+  const initial = new Set(selected);
+  viewDirty = () => form.comment.trim().length > 0
+    || selected.size !== initial.size || [...selected].some(id => !initial.has(id));
+
   const countEl = h('span', { class: 'action-count tnum' });
   const updateCount = () => {
     const { added, removed } = diff();
@@ -1073,6 +1126,8 @@ function renderReviewBatch(b) {
   const plain = facts.filter(f => !f.auto_approved && !needsAnswer.includes(f));
   const manual = [...needsAnswer, ...plain];
 
+  viewDirty = () => decisions.size > 0 || globalComment.trim().length > 0;
+
   const progressEls = [];
   function decidedCount() {
     let n = 0;
@@ -1242,6 +1297,12 @@ function renderReviewBatch(b) {
         h('div', { style: 'display:flex; align-items:baseline; gap:14px; flex-wrap:wrap;' },
           h('h1', { class: 'page-title' }, batchTitle(b)),
           progressEl(),
+        ),
+        h('p', { class: 'batch-counts' },
+          h('span', {}, `${facts.length} фактов`),
+          autoFacts.length ? h('span', {}, `${autoFacts.length} авто-подтверждено`) : null,
+          h('span', { class: manual.length ? 'accent' : '' }, `${manual.length} ждут решения`),
+          needsAnswer.length ? h('span', { class: 'warn' }, `${needsAnswer.length} с вопросом или low`) : null,
         ),
         b.note ? h('p', { class: 'lede' }, b.note) : null,
         stillExtracting

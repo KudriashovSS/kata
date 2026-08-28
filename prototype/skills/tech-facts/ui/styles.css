@@ -327,6 +327,31 @@ textarea { resize: vertical; min-height: 60px; width: 100%; }
 textarea::placeholder, input::placeholder { color: var(--text-subtle); }
 select { min-height: 40px; cursor: pointer; }
 
+/* ---------- Полоса «память локальная» ---------- */
+
+.memory-strip {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 20px;
+  background: var(--warning-soft);
+  border-bottom: 1px solid color-mix(in oklab, var(--warning) 35%, var(--border));
+  font-size: 12.5px; color: var(--text);
+}
+.memory-strip svg { color: var(--warning); flex-shrink: 0; }
+.memory-strip .m-path { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-muted); }
+
+/* ---------- Плашка «агент прислал новую версию» ---------- */
+
+.update-banner {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 10px 14px; margin-bottom: 16px;
+  border: 1px solid color-mix(in oklab, var(--primary) 40%, var(--border));
+  background: var(--primary-soft);
+  border-radius: var(--r-card);
+  font-size: 13px;
+}
+.update-banner svg { color: var(--primary); flex-shrink: 0; }
+.update-banner span { flex: 1; min-width: 220px; }
+
 /* ---------- Каркас: сайдбар всегда на месте ---------- */
 
 .app-shell { display: flex; align-items: flex-start; }
@@ -518,6 +543,13 @@ select { min-height: 40px; cursor: pointer; }
 }
 .picker-hint svg { color: var(--primary); flex-shrink: 0; }
 .picker-hint.sent { color: var(--text); }
+
+/* Счётчики порции считает шелл — агенту в note остаётся смысл, а не арифметика. */
+.batch-counts { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12.5px; color: var(--text-muted); margin-top: 4px; }
+.batch-counts span { display: inline-flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
+.batch-counts span + span::before { content: "·"; color: var(--text-subtle); margin-right: 8px; }
+.batch-counts .accent { color: var(--text); font-weight: 600; }
+.batch-counts .warn { color: var(--warning); font-weight: 600; }
 .action-diff {
   margin-left: 8px; padding: 1px 7px; border-radius: 999px;
   background: var(--primary-soft); color: var(--primary); font-size: 12px;

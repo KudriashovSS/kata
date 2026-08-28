@@ -2,6 +2,10 @@
   "project": "services-platform",
   "intro": "Contract-first .NET монолит: 5 модулей, общение через Contracts и in-process события, PostgreSQL с миграциями. Разведка прошла по репозиторию — вот что из него реально извлекается.",
   "auto_approve": "high",
+  "memory": {
+    "backend": "xmemory",
+    "location": "xmemory://services-platform"
+  },
   "slices": [
     {
       "id": "module-graph",

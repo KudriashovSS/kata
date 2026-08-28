@@ -329,6 +329,80 @@ function openBrowser(url) {
 
 // ---------- push ----------
 
+// ---------- валидация payload'ов ----------
+
+// Проверяем ТОЛЬКО мини-ядро контракта. Схему фактов, состав срезов и любые
+// дополнительные поля агент проектирует сам — валидатор в это не лезет.
+const MAX_STATEMENT = 200;
+
+function validatePayload(stage, payload) {
+  const errors = [];   // ломают контракт → push не проходит
+  const warnings = []; // косметика первого экрана → печатаем и едем дальше
+
+  const checkFacts = (facts, where) => {
+    if (!Array.isArray(facts)) return;
+    facts.forEach((f, i) => {
+      const id = (f && f.id) || `${where}[${i}]`;
+      if (!f || typeof f !== 'object') { errors.push(`${id}: факт не объект`); return; }
+      if (!f.id) errors.push(`${id}: нет id`);
+      if (!f.statement || !String(f.statement).trim()) errors.push(`${id}: нет statement`);
+      if (!Array.isArray(f.evidence) || !f.evidence.length) {
+        errors.push(`${id}: нет evidence — факт без evidence не существует`);
+      }
+      if (f.statement && String(f.statement).length > MAX_STATEMENT) {
+        warnings.push(`${id}: statement ${String(f.statement).length} символов (ориентир ≤ ${MAX_STATEMENT})`);
+      }
+    });
+  };
+
+  if (stage === 'picker') {
+    const slices = payload && payload.slices;
+    if (!Array.isArray(slices) || !slices.length) errors.push('picker.json: нет slices[]');
+    else {
+      const seen = new Set();
+      slices.forEach((s, i) => {
+        const id = (s && s.id) || `slices[${i}]`;
+        if (!s || !s.id) errors.push(`${id}: нет id`);
+        else if (seen.has(s.id)) errors.push(`${s.id}: дубль id среза`);
+        else seen.add(s.id);
+        if (!s || !s.title) errors.push(`${id}: нет title`);
+        if (s && !s.summary) warnings.push(`${id}: нет summary — на карточке будет обрезок found`);
+        else if (s && s.summary.length > 80) warnings.push(`${id}: summary ${s.summary.length} символов (карточка рассчитана на ≤ 80)`);
+        if (s && !s.art) warnings.push(`${id}: нет art — карточка останется без иллюстрации`);
+      });
+      const rec = slices.filter((s) => s && s.recommended).length;
+      if (rec > 3) warnings.push(`recommended у ${rec} срезов — UI отметит только первые 3`);
+    }
+  }
+
+  if (stage === 'review') {
+    const batches = Array.isArray(payload && payload.batches) ? payload.batches
+      : (Array.isArray(payload && payload.facts) ? [payload] : null);
+    if (!batches) errors.push('review.json: нет batches[] (и это не одиночный батч с facts[])');
+    else {
+      const seen = new Set();
+      batches.forEach((b, i) => {
+        const name = (b && b.batch) || `batches[${i}]`;
+        if (!b || !b.batch) errors.push(`${name}: нет batch (id порции)`);
+        else if (seen.has(b.batch)) errors.push(`${b.batch}: дубль порции`);
+        else seen.add(b.batch);
+        const status = b && b.status;
+        if (status && !['extracting', 'ready', 'applied'].includes(status)) {
+          warnings.push(`${name}: неизвестный status «${status}» — UI поймёт его как ready`);
+        }
+        if (status !== 'extracting') checkFacts(b && b.facts, name);
+      });
+    }
+  }
+
+  if (stage === 'explore') {
+    const pages = payload && payload.pages;
+    if (!Array.isArray(pages) || !pages.length) errors.push('site.json: нет pages[]');
+  }
+
+  return { errors, warnings };
+}
+
 function cmdPush(args) {
   const stage = args._[0];
   if (!STAGES.includes(stage)) {
@@ -338,15 +412,28 @@ function cmdPush(args) {
 
   const required = [STAGE_PAYLOAD[stage]];
   if (stage === 'explore') required.push('site/facts.json');
+  let payload = null;
   for (const rel of required) {
     const abs = path.join(workdir, rel);
     if (!fs.existsSync(abs)) {
       fail(`Ошибка: файл payload не найден: ${abs}\nСтадия «${stage}» требует ${required.join(' и ')}.`);
     }
-    try { readJsonFile(abs); } catch (e) {
+    try {
+      const data = readJsonFile(abs);
+      if (rel === STAGE_PAYLOAD[stage]) payload = data;
+    } catch (e) {
       fail(`Ошибка: файл ${abs} не парсится как JSON: ${e.message}`);
     }
   }
+
+  const { errors, warnings } = validatePayload(stage, payload);
+  for (const w of warnings) process.stderr.write(`Предупреждение: ${w}\n`);
+  if (errors.length && !args.force) {
+    fail(`Ошибка: payload стадии «${stage}» нарушает мини-ядро контракта:\n`
+      + errors.map((e) => `  · ${e}`).join('\n')
+      + `\nПочини факты (это железные правила скилла) или пропусти проверку: --force.`);
+  }
+  if (errors.length) process.stderr.write(`Предупреждение: --force, пропущено нарушений: ${errors.length}\n`);
 
   const state = readState(workdir);
   const next = {
@@ -362,8 +449,36 @@ function cmdPush(args) {
 
 // ---------- await ----------
 
+/** Два await на одном workdir дерутся за один курсор `.ack` — второй молча зависал бы навсегда. */
+function acquireAwaitLock(workdir) {
+  const lockFile = path.join(workdir, '.await.lock');
+  const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      fs.writeFileSync(lockFile, JSON.stringify({ pid: process.pid, at: nowIso() }), { flag: 'wx' });
+      const release = () => { try { fs.unlinkSync(lockFile); } catch { /* уже убрали */ } };
+      process.on('exit', release);
+      for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => { release(); process.exit(130); });
+      return release;
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      const held = tryReadJson(lockFile);
+      if (held && held.pid && alive(held.pid)) {
+        fail(`Ошибка: на этом workdir уже ждёт решения другой await (pid ${held.pid}, с ${held.at}).\n`
+          + `Два await делят один курсор .ack — второй заберёт чужое решение или зависнет.\n`
+          + `Дождись первого или сними его; если процесса уже нет, удали ${lockFile}.`, 4);
+      }
+      // лок от умершего процесса — забираем
+      try { fs.unlinkSync(lockFile); } catch { /* кто-то опередил */ }
+    }
+  }
+  fail('Ошибка: не удалось взять лок await — попробуй ещё раз.', 4);
+  return () => {};
+}
+
 async function cmdAwait(args) {
   const workdir = requireWorkdir(args);
+  const releaseLock = acquireAwaitLock(workdir);
   const stageFilter = args.stage ? String(args.stage) : null;
   const timeoutSec = args.timeout !== undefined ? Number(args.timeout) : 540;
   const deadline = Date.now() + timeoutSec * 1000;
@@ -409,10 +524,12 @@ async function cmdAwait(args) {
     if (found) {
       fs.writeFileSync(ackFile, String(found.newOffset));
       console.log(found.line);
+      releaseLock();
       process.exit(0);
     }
     if (Date.now() >= deadline) {
       console.log('{"timeout":true}');
+      releaseLock();
       process.exit(3);
     }
     await new Promise((r) => setTimeout(r, 500));
@@ -459,14 +576,28 @@ function cmdExport(args) {
   const appJs = fs.readFileSync(path.join(UI_DIR, 'app.js'), 'utf8');
   const mermaid = fs.readFileSync(path.join(UI_DIR, 'vendor/mermaid.min.js'), 'utf8');
 
+  const title = site.project ? `${site.project} · tech-facts` : 'tech-facts';
   html = html
+    .replace('<title>tech-facts</title>', () => `<title>${title}</title>`)
     .replace('<link rel="stylesheet" href="./styles.css">', () => `<style>\n${css}\n</style>`)
     .replace('<script src="./vendor/mermaid.min.js"></script>',
       () => `<script>window.TECHFACTS_EMBEDDED = ${embeddedJson};</script>\n<script>${mermaid}</script>`)
     .replace('<script type="module" src="./app.js"></script>', () => `<script type="module">\n${appJs}\n</script>`);
 
+  // --fragment: без <!doctype>/<html>/<head>/<body> — ровно то, что принимает Artifact-тул.
+  if (args.fragment) {
+    const headInner = html.slice(html.indexOf('<head>') + '<head>'.length, html.indexOf('</head>'));
+    const bodyStart = html.indexOf('<body>') + '<body>'.length;
+    // именно lastIndexOf: строка `</body>` встречается внутри вендоренного mermaid
+    const bodyEnd = html.lastIndexOf('</body>');
+    if (bodyStart < '<body>'.length || bodyEnd <= bodyStart) fail('Ошибка: не удалось вырезать фрагмент из шелла.');
+    const head = headInner.split('\n').filter((l) => !/^\s*<meta\b/.test(l)).join('\n').trim();
+    html = `${head}\n${html.slice(bodyStart, bodyEnd).trim()}\n`;
+  }
+
   fs.writeFileSync(out, html);
-  console.log(`Экспортировано: ${out} (${Math.round(fs.statSync(out).size / 1024)} KB, read-only эксплорер)`);
+  const kind = args.fragment ? 'фрагмент для Artifact (без doctype/html/body)' : 'самодостаточный HTML-файл';
+  console.log(`Экспортировано: ${out} (${Math.round(fs.statSync(out).size / 1024)} KB, read-only эксплорер, ${kind})`);
 }
 
 // ---------- main ----------
@@ -486,5 +617,5 @@ switch (command) {
          `  push <picker|review|explore> --workdir <dir>\n` +
          `  await --workdir <dir> [--stage X] [--timeout 540]\n` +
          `  status --workdir <dir>\n` +
-         `  export --workdir <dir> [--out page.html]`);
+         `  export --workdir <dir> [--out page.html] [--fragment]`);
 }
