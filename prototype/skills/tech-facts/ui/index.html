@@ -39,7 +39,10 @@
       <span class="label" id="theme-label"></span>
     </button>
   </header>
-  <main id="app" aria-live="polite"></main>
+  <div class="app-shell">
+    <aside class="app-nav" id="app-nav" aria-label="Разделы"></aside>
+    <main id="app" aria-live="polite"></main>
+  </div>
   <div id="overlay-root"></div>
   <script src="./vendor/mermaid.min.js"></script>
   <script type="module" src="./app.js"></script>

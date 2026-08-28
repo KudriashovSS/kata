@@ -152,7 +152,7 @@ async function cmdServe(args) {
   watchDir(path.join(workdir, 'site'));
 
   const RELEVANT = ['state.json', 'picker.json', 'review.json',
-    'site/site.json', 'site/facts.json', 'site/entities.json'];
+    'site/site.json', 'site/facts.json', 'site/entities.json', 'decisions.jsonl'];
   let lastSig = '';
   function pollSignature() {
     return RELEVANT.map((rel) => {
@@ -188,7 +188,26 @@ async function cmdServe(args) {
     const state = readState(workdir);
     const payloadRel = STAGE_PAYLOAD[state.stage];
     const payload = payloadRel ? tryReadJson(path.join(workdir, payloadRel)) : null;
-    sendJson(res, 200, { state, payload });
+    // Стадии живут параллельно: UI сам решает, что показать, — говорим ему, что вообще есть.
+    const available = {};
+    for (const [stage, rel] of Object.entries(STAGE_PAYLOAD)) {
+      available[stage === 'explore' ? 'site' : stage] = fs.existsSync(path.join(workdir, rel));
+    }
+    sendJson(res, 200, { state, payload, available });
+  }
+
+  /** Журнал решений человека: по нему UI помнит, что уже отправлено (переживает перезагрузку). */
+  function handleDecisions(res) {
+    const file = path.join(workdir, 'decisions.jsonl');
+    let out = [];
+    try {
+      out = fs.readFileSync(file, 'utf8').split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => { try { return JSON.parse(line); } catch { return null; } })
+        .filter(Boolean);
+    } catch { /* решений ещё не было */ }
+    sendJson(res, 200, out);
   }
 
   function handleFile(res, rawName) {
@@ -273,6 +292,7 @@ async function cmdServe(args) {
       const rawPath = req.url.split('?')[0];
       if (req.method === 'GET' && pathname === '/api/health') return handleHealth(res);
       if (req.method === 'GET' && pathname === '/api/state') return handleState(res);
+      if (req.method === 'GET' && pathname === '/api/decisions') return handleDecisions(res);
       if (req.method === 'GET' && rawPath.startsWith('/api/file/')) {
         return handleFile(res, rawPath.slice('/api/file/'.length));
       }
@@ -375,8 +395,11 @@ async function cmdAwait(args) {
         if (obj && (!stageFilter || obj.stage === stageFilter)) {
           return { line: JSON.stringify(obj), newOffset: end };
         }
+        // Чужая стадия: не потребляем — иначе в параллельном режиме решение человека
+        // (например правка состава срезов) молча пропало бы. Ждём await без фильтра.
+        if (obj) return null;
       }
-      pos = end; // не совпало по стадии — байты потребляем (но .ack сдвигаем только при находке)
+      pos = end; // битая строка — пропускаем
     }
     return null;
   }

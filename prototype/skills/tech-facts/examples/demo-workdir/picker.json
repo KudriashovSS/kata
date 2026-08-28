@@ -1,77 +1,103 @@
 {
   "project": "services-platform",
-  "intro": "Contract-first .NET монолит: 5 модулей в src/Modules/*, общение через Contracts-проекты и in-process события, PostgreSQL с миграциями FluentMigrator. Разведка прошла по репозиторию — вот срезы, которые можно извлечь.",
+  "intro": "Contract-first .NET монолит: 5 модулей, общение через Contracts и in-process события, PostgreSQL с миграциями. Разведка прошла по репозиторию — вот что из него реально извлекается.",
   "auto_approve": "high",
   "slices": [
     {
       "id": "module-graph",
       "title": "Граф модулей и зависимостей",
+      "summary": "5 модулей, ссылки только через *.Contracts — циклов нет",
+      "art": "<svg viewBox=\"0 0 320 120\" xmlns=\"http://www.w3.org/2000/svg\" stroke-linecap=\"round\" stroke-linejoin=\"round\" fill=\"none\"><rect x=\"16\" y=\"12\" width=\"74\" height=\"28\" rx=\"7\" stroke=\"currentColor\" stroke-width=\"1.3\" opacity=\".7\"/><path d=\"M28 26.0 h32\" stroke=\"currentColor\" stroke-width=\"3\" opacity=\".35\"/><rect x=\"16\" y=\"78\" width=\"74\" height=\"28\" rx=\"7\" stroke=\"currentColor\" stroke-width=\"1.3\" opacity=\".7\"/><path d=\"M28 92.0 h32\" stroke=\"currentColor\" stroke-width=\"3\" opacity=\".35\"/><rect x=\"123\" y=\"45\" width=\"74\" height=\"30\" rx=\"7\" stroke=\"var(--primary)\" stroke-width=\"1.6\" fill=\"var(--primary-soft)\"/><path d=\"M135 60.0 h32\" stroke=\"var(--primary)\" stroke-width=\"3\" opacity=\".55\"/><rect x=\"230\" y=\"12\" width=\"74\" height=\"28\" rx=\"7\" stroke=\"currentColor\" stroke-width=\"1.3\" opacity=\".7\"/><path d=\"M242 26.0 h32\" stroke=\"currentColor\" stroke-width=\"3\" opacity=\".35\"/><rect x=\"230\" y=\"78\" width=\"74\" height=\"28\" rx=\"7\" stroke=\"currentColor\" stroke-width=\"1.3\" opacity=\".7\"/><path d=\"M242 92.0 h32\" stroke=\"currentColor\" stroke-width=\"3\" opacity=\".35\"/><path d=\"M90 26 H106 V60 H117\" stroke=\"currentColor\" stroke-width=\"1.4\" opacity=\".55\"/><path d=\"M118 56 l5 4 -5 4\" stroke=\"currentColor\" stroke-width=\"1.4\" opacity=\".7\"/><path d=\"M90 92 H106 V60 H117\" stroke=\"currentColor\" stroke-width=\"1.4\" opacity=\".55\"/><path d=\"M118 56 l5 4 -5 4\" stroke=\"currentColor\" stroke-width=\"1.4\" opacity=\".7\"/><path d=\"M197 60 H213 V26 H224\" stroke=\"currentColor\" stroke-width=\"1.4\" opacity=\".55\"/><path d=\"M225 22 l5 4 -5 4\" stroke=\"currentColor\" stroke-width=\"1.4\" opacity=\".7\"/><path d=\"M197 60 H213 V92 H224\" stroke=\"currentColor\" stroke-width=\"1.4\" opacity=\".55\"/><path d=\"M225 88 l5 4 -5 4\" stroke=\"currentColor\" stroke-width=\"1.4\" opacity=\".7\"/><path d=\"M267 78 V60 H197\" stroke=\"currentColor\" stroke-width=\"1.4\" opacity=\".55\" stroke-dasharray=\"4 4\"/><path d=\"M202 56 l-5 4 5 4\" stroke=\"currentColor\" stroke-width=\"1.4\" opacity=\".7\"/></svg>",
       "stars": 5,
-      "auto_note": "извлекается автоматически из ссылок между проектами",
       "cost": "S",
+      "recommended": true,
       "found": "5 модулей (Orders, Billing, Pricing, Catalog, Notifications), ссылки только через *.Contracts — циклов нет",
       "value": "База для всего остального: кто от кого зависит и где границы",
-      "recommended": true
+      "auto_note": "извлекается автоматически из ссылок между проектами"
     },
     {
       "id": "event-graph",
       "title": "Граф событий",
+      "summary": "14 in-process событий через IEventBus, брокера нет",
+      "art": "<svg viewBox=\"0 0 320 120\" xmlns=\"http://www.w3.org/2000/svg\" stroke-linecap=\"round\" stroke-linejoin=\"round\" fill=\"none\"><rect x=\"14\" y=\"45\" width=\"72\" height=\"30\" rx=\"7\" stroke=\"var(--primary)\" stroke-width=\"1.6\" fill=\"var(--primary-soft)\"/><path d=\"M26 60.0 h32\" stroke=\"var(--primary)\" stroke-width=\"3\" opacity=\".55\"/><path d=\"M86 60 H104\" stroke=\"currentColor\" stroke-width=\"1.4\" opacity=\".55\"/><path d=\"M105 56 l5 4 -5 4\" stroke=\"var(--accent)\" stroke-width=\"1.4\" opacity=\".7\"/><circle cx=\"130\" cy=\"60\" r=\"17\" stroke=\"var(--accent)\" stroke-width=\"1.6\" fill=\"var(--accent-soft)\"/><path d=\"M132 50 l-8 12h7l-2 8 8-12h-7z\" stroke=\"var(--accent)\" stroke-width=\"1.4\"/><path d=\"M147 60 H160 V24 H176\" stroke=\"var(--accent)\" stroke-width=\"1.4\" opacity=\".55\"/><path d=\"M177 20 l5 4 -5 4\" stroke=\"var(--accent)\" stroke-width=\"1.4\" opacity=\".7\"/><path d=\"M147 60 H176\" stroke=\"var(--accent)\" stroke-width=\"1.4\" opacity=\".55\"/><path d=\"M177 56 l5 4 -5 4\" stroke=\"var(--accent)\" stroke-width=\"1.4\" opacity=\".7\"/><path d=\"M147 60 H160 V96 H176\" stroke=\"var(--accent)\" stroke-width=\"1.4\" opacity=\".55\" stroke-dasharray=\"4 4\"/><path d=\"M177 92 l5 4 -5 4\" stroke=\"var(--accent)\" stroke-width=\"1.4\" opacity=\".7\"/><rect x=\"184\" y=\"10\" width=\"68\" height=\"28\" rx=\"7\" stroke=\"currentColor\" stroke-width=\"1.3\" opacity=\".7\"/><path d=\"M196 24.0 h32\" stroke=\"currentColor\" stroke-width=\"3\" opacity=\".35\"/><rect x=\"184\" y=\"46\" width=\"68\" height=\"28\" rx=\"7\" stroke=\"currentColor\" stroke-width=\"1.3\" opacity=\".7\"/><path d=\"M196 60.0 h32\" stroke=\"currentColor\" stroke-width=\"3\" opacity=\".35\"/><rect x=\"184\" y=\"82\" width=\"68\" height=\"28\" rx=\"7\" stroke=\"currentColor\" stroke-width=\"1.3\" opacity=\".7\" stroke-dasharray=\"4 4\"/><path d=\"M196 96.0 h32\" stroke=\"currentColor\" stroke-width=\"3\" opacity=\".35\"/><path d=\"M272 8 V112\" stroke=\"currentColor\" stroke-width=\"1.2\" stroke-dasharray=\"3 5\" opacity=\".45\"/><path d=\"M280 46 h26 M280 60 h18 M280 74 h26\" stroke=\"currentColor\" stroke-width=\"2.5\" opacity=\".22\"/></svg>",
       "stars": 4,
-      "auto_note": "извлекается автоматически; семантика доставки — с валидацией",
       "cost": "S",
+      "recommended": true,
       "found": "14 in-process событий через IEventBus в BuildingBlocks/, внешнего брокера нет",
       "value": "Агент без этого среза забывает уведомить консюмеров при изменении публикатора",
-      "recommended": true
+      "auto_note": "извлекается автоматически; семантика доставки — с валидацией"
     },
     {
       "id": "data-ownership",
       "title": "Владение данными",
+      "summary": "41 таблица в 5 схемах, миграции per-module",
+      "art": "<svg viewBox=\"0 0 320 120\" xmlns=\"http://www.w3.org/2000/svg\" stroke-linecap=\"round\" stroke-linejoin=\"round\" fill=\"none\"><rect x=\"12\" y=\"16\" width=\"182\" height=\"88\" rx=\"10\" stroke=\"var(--primary)\" stroke-width=\"1.4\" stroke-dasharray=\"5 4\" fill=\"var(--primary-soft)\" opacity=\".8\"/><path d=\"M28 32 h36\" stroke=\"var(--primary)\" stroke-width=\"3\" opacity=\".6\"/><path d=\"M53 56 v32 a17 6 0 0 0 34 0 v-32\" stroke=\"var(--primary)\" stroke-width=\"1.5\"/><ellipse cx=\"70\" cy=\"56\" rx=\"17\" ry=\"6\" stroke=\"var(--primary)\" stroke-width=\"1.5\" fill=\"var(--primary-soft)\"/><path d=\"M131 56 v32 a17 6 0 0 0 34 0 v-32\" stroke=\"var(--primary)\" stroke-width=\"1.5\"/><ellipse cx=\"148\" cy=\"56\" rx=\"17\" ry=\"6\" stroke=\"var(--primary)\" stroke-width=\"1.5\" fill=\"var(--primary-soft)\"/><path d=\"M255 56 v32 a17 6 0 0 0 34 0 v-32\" stroke=\"currentColor\" stroke-width=\"1.5\" opacity=\".65\"/><ellipse cx=\"272\" cy=\"56\" rx=\"17\" ry=\"6\" stroke=\"currentColor\" stroke-width=\"1.5\" fill=\"none\" opacity=\".65\"/><path d=\"M248 60 H206\" stroke=\"var(--danger)\" stroke-width=\"1.5\" stroke-dasharray=\"5 4\"/><path d=\"M205 55 l-6 5 6 5\" stroke=\"var(--danger)\" stroke-width=\"1.5\"/><path d=\"M226 44 l6 10 h-12z\" stroke=\"var(--danger)\" stroke-width=\"1.4\" fill=\"var(--danger)\" fill-opacity=\".18\"/></svg>",
       "stars": 3,
-      "auto_note": "схемы читаются из миграций, владельцы — по расположению репозиториев",
       "cost": "M",
+      "recommended": true,
       "found": "41 таблица в 5 схемах PostgreSQL, миграции FluentMigrator per-module",
       "value": "Запрещает агенту писать в чужие таблицы напрямую, минуя контракт модуля",
-      "recommended": true
+      "auto_note": "схемы читаются из миграций, владельцы — по расположению репозиториев"
+    },
+    {
+      "id": "api-contracts",
+      "title": "Контракты API",
+      "summary": "31 endpoint из openapi-спек, 4 сгенерированных клиента",
+      "art": "<svg viewBox=\"0 0 320 120\" xmlns=\"http://www.w3.org/2000/svg\" stroke-linecap=\"round\" stroke-linejoin=\"round\" fill=\"none\"><rect x=\"12\" y=\"14\" width=\"180\" height=\"92\" rx=\"10\" stroke=\"currentColor\" stroke-width=\"1.3\" opacity=\".7\"/><rect x=\"26\" y=\"26\" width=\"30\" height=\"13\" rx=\"3\" fill=\"var(--accent)\" opacity=\".9\"/><path d=\"M64 32.5 h112\" stroke=\"currentColor\" stroke-width=\"3\" opacity=\".3\"/><rect x=\"26\" y=\"50\" width=\"38\" height=\"13\" rx=\"3\" fill=\"currentColor\" opacity=\".35\"/><path d=\"M72 56.5 h104\" stroke=\"currentColor\" stroke-width=\"3\" opacity=\".3\"/><rect x=\"26\" y=\"74\" width=\"26\" height=\"13\" rx=\"3\" fill=\"var(--accent)\" opacity=\".9\"/><path d=\"M60 80.5 h116\" stroke=\"currentColor\" stroke-width=\"3\" opacity=\".3\"/><path d=\"M192 60 H214\" stroke=\"currentColor\" stroke-width=\"1.4\" opacity=\".55\"/><path d=\"M215 56 l5 4 -5 4\" stroke=\"currentColor\" stroke-width=\"1.4\" opacity=\".7\"/><rect x=\"222\" y=\"30\" width=\"80\" height=\"28\" rx=\"7\" stroke=\"var(--primary)\" stroke-width=\"1.6\" fill=\"var(--primary-soft)\"/><path d=\"M234 44.0 h32\" stroke=\"var(--primary)\" stroke-width=\"3\" opacity=\".55\"/><path d=\"M262 58 V78\" stroke=\"currentColor\" stroke-width=\"1.4\" opacity=\".55\" stroke-dasharray=\"4 4\"/><path d=\"M258 79 l4 5 4 -5\" stroke=\"currentColor\" stroke-width=\"1.4\" opacity=\".7\"/><rect x=\"222\" y=\"84\" width=\"80\" height=\"26\" rx=\"7\" stroke=\"currentColor\" stroke-width=\"1.3\" opacity=\".7\" stroke-dasharray=\"4 4\"/><path d=\"M248 97 h6 M258 97 h6 M268 97 h6\" stroke=\"currentColor\" stroke-width=\"2.5\" opacity=\".3\"/></svg>",
+      "stars": 4,
+      "cost": "S",
+      "recommended": false,
+      "found": "31 endpoint в specs/*.yaml (contract-first, роутинг кодогенерится), 4 внутренних потребителя через сгенерированные Refit-клиенты; внешние потребители из репозитория не видны",
+      "value": "Агент «чинит» endpoint, не зная, кто его вызывает, и путает публичный контракт с внутренним",
+      "auto_note": "провайдер-сторона извлекается из спек механически, потребители — только внутрирепозиторные"
     },
     {
       "id": "config-flags",
       "title": "Конфигурация и фиче-флаги",
+      "summary": "23 флага: appsettings + FeatureManagement",
+      "art": "<svg viewBox=\"0 0 320 120\" xmlns=\"http://www.w3.org/2000/svg\" stroke-linecap=\"round\" stroke-linejoin=\"round\" fill=\"none\"><rect x=\"16\" y=\"14\" width=\"38\" height=\"20\" rx=\"10\" stroke=\"var(--primary)\" stroke-width=\"1.5\" fill=\"var(--primary)\" fill-opacity=\".18\"/><circle cx=\"42\" cy=\"24\" r=\"6\" fill=\"var(--primary)\"/><rect x=\"16\" y=\"50\" width=\"38\" height=\"20\" rx=\"10\" stroke=\"currentColor\" stroke-width=\"1.5\" fill=\"none\" fill-opacity=\"0\" opacity=\".55\"/><circle cx=\"28\" cy=\"60\" r=\"6\" fill=\"currentColor\" opacity=\".55\"/><rect x=\"16\" y=\"86\" width=\"38\" height=\"20\" rx=\"10\" stroke=\"var(--primary)\" stroke-width=\"1.5\" fill=\"var(--primary)\" fill-opacity=\".18\"/><circle cx=\"42\" cy=\"96\" r=\"6\" fill=\"var(--primary)\"/><path d=\"M54 24 H84 V44 H104\" stroke=\"currentColor\" stroke-width=\"1.4\" opacity=\".55\"/><path d=\"M105 40 l5 4 -5 4\" stroke=\"currentColor\" stroke-width=\"1.4\" opacity=\".7\"/><path d=\"M54 96 H84 V76 H104\" stroke=\"currentColor\" stroke-width=\"1.4\" opacity=\".55\" stroke-dasharray=\"4 4\"/><path d=\"M106 71 l4 5 4 -5\" stroke=\"currentColor\" stroke-width=\"1.4\" opacity=\".7\"/><circle cx=\"120\" cy=\"60\" r=\"15\" stroke=\"var(--primary)\" stroke-width=\"1.6\" fill=\"var(--primary-soft)\"/><path d=\"M114 60 h12 M120 54 v12\" stroke=\"var(--primary)\" stroke-width=\"1.6\"/><path d=\"M135 60 H160 V28 H180\" stroke=\"currentColor\" stroke-width=\"1.4\" opacity=\".55\"/><path d=\"M181 24 l5 4 -5 4\" stroke=\"currentColor\" stroke-width=\"1.4\" opacity=\".7\"/><path d=\"M135 60 H160 V92 H180\" stroke=\"currentColor\" stroke-width=\"1.4\" opacity=\".55\" stroke-dasharray=\"4 4\"/><path d=\"M181 88 l5 4 -5 4\" stroke=\"currentColor\" stroke-width=\"1.4\" opacity=\".7\"/><rect x=\"188\" y=\"14\" width=\"74\" height=\"28\" rx=\"7\" stroke=\"var(--primary)\" stroke-width=\"1.6\" fill=\"var(--primary-soft)\"/><path d=\"M200 28.0 h32\" stroke=\"var(--primary)\" stroke-width=\"3\" opacity=\".55\"/><rect x=\"188\" y=\"78\" width=\"74\" height=\"28\" rx=\"7\" stroke=\"currentColor\" stroke-width=\"1.3\" opacity=\".7\" stroke-dasharray=\"4 4\"/><path d=\"M200 92.0 h32\" stroke=\"currentColor\" stroke-width=\"3\" opacity=\".35\"/></svg>",
       "stars": 4,
-      "auto_note": "флаги собираются из appsettings.* и IFeatureManager автоматически",
       "cost": "S",
+      "recommended": false,
       "found": "23 флага: 9 в appsettings.json, 14 через Microsoft.FeatureManagement",
       "value": "Поведение системы ветвится на флагах — без карты агент чинит не ту ветку",
-      "recommended": false
+      "auto_note": "флаги собираются из appsettings.* и IFeatureManager автоматически"
     },
     {
       "id": "external-apis",
       "title": "Внешние интеграции",
+      "summary": "6 внешних клиентов: платежи, 1С, dadata, SMS, e-mail, курсы",
+      "art": "<svg viewBox=\"0 0 320 120\" xmlns=\"http://www.w3.org/2000/svg\" stroke-linecap=\"round\" stroke-linejoin=\"round\" fill=\"none\"><rect x=\"118\" y=\"40\" width=\"84\" height=\"40\" rx=\"9\" stroke=\"var(--primary)\" stroke-width=\"1.7\" fill=\"var(--primary-soft)\"/><path d=\"M134 60 h30\" stroke=\"var(--primary)\" stroke-width=\"3\" opacity=\".6\"/><rect x=\"12\" y=\"10\" width=\"66\" height=\"24\" rx=\"7\" stroke=\"currentColor\" stroke-width=\"1.3\" opacity=\".7\"/><rect x=\"12\" y=\"86\" width=\"66\" height=\"24\" rx=\"7\" stroke=\"currentColor\" stroke-width=\"1.3\" opacity=\".7\"/><rect x=\"242\" y=\"10\" width=\"66\" height=\"24\" rx=\"7\" stroke=\"currentColor\" stroke-width=\"1.3\" opacity=\".7\"/><rect x=\"242\" y=\"86\" width=\"66\" height=\"24\" rx=\"7\" stroke=\"currentColor\" stroke-width=\"1.3\" opacity=\".7\"/><rect x=\"242\" y=\"48\" width=\"66\" height=\"24\" rx=\"7\" stroke=\"currentColor\" stroke-width=\"1.3\" opacity=\".7\" stroke-dasharray=\"4 4\"/><path d=\"M78 22 H100 V48\" stroke=\"currentColor\" stroke-width=\"1.4\" opacity=\".55\"/><path d=\"M96 49 l4 5 4 -5\" stroke=\"currentColor\" stroke-width=\"1.4\" opacity=\".7\"/><path d=\"M78 98 H100 V72\" stroke=\"currentColor\" stroke-width=\"1.4\" opacity=\".55\"/><path d=\"M96 71 l4 -5 4 5\" stroke=\"currentColor\" stroke-width=\"1.4\" opacity=\".7\"/><path d=\"M202 52 H222 V22 H236\" stroke=\"currentColor\" stroke-width=\"1.4\" opacity=\".55\"/><path d=\"M237 18 l5 4 -5 4\" stroke=\"currentColor\" stroke-width=\"1.4\" opacity=\".7\"/><path d=\"M202 68 H222 V98 H236\" stroke=\"currentColor\" stroke-width=\"1.4\" opacity=\".55\"/><path d=\"M237 94 l5 4 -5 4\" stroke=\"currentColor\" stroke-width=\"1.4\" opacity=\".7\"/><path d=\"M202 60 H236\" stroke=\"currentColor\" stroke-width=\"1.4\" opacity=\".55\" stroke-dasharray=\"4 4\"/><path d=\"M237 56 l5 4 -5 4\" stroke=\"currentColor\" stroke-width=\"1.4\" opacity=\".7\"/><path d=\"M40 22 h10 M40 98 h10 M262 22 h10 M262 98 h10\" stroke=\"currentColor\" stroke-width=\"2.5\" opacity=\".3\"/></svg>",
       "stars": 3,
-      "auto_note": "клиенты находятся по Refit-интерфейсам, ретраи и таймауты — с валидацией",
       "cost": "M",
+      "recommended": false,
       "found": "6 HTTP-клиентов через Refit + Polly: платёжный шлюз, 1С, dadata, SMS, e-mail, курсы валют",
       "value": "Показывает, где система хрупкая к чужим сбоям и что замокать в тестах",
-      "recommended": false
+      "auto_note": "клиенты находятся по Refit-интерфейсам, ретраи и таймауты — с валидацией"
     },
     {
       "id": "ddd-context-map",
       "title": "DDD Context Map",
+      "summary": "Границы контекстов — черновик по модулям и CODEOWNERS",
+      "art": "<svg viewBox=\"0 0 320 120\" xmlns=\"http://www.w3.org/2000/svg\" stroke-linecap=\"round\" stroke-linejoin=\"round\" fill=\"none\"><rect x=\"16\" y=\"20\" width=\"150\" height=\"80\" rx=\"16\" stroke=\"var(--primary)\" stroke-width=\"1.5\" stroke-dasharray=\"6 4\" fill=\"var(--primary-soft)\" opacity=\".7\"/><rect x=\"140\" y=\"30\" width=\"164\" height=\"80\" rx=\"16\" stroke=\"var(--accent)\" stroke-width=\"1.5\" stroke-dasharray=\"6 4\" fill=\"var(--accent-soft)\" opacity=\".7\"/><path d=\"M30 36 h30 M156 46 h30\" stroke=\"currentColor\" stroke-width=\"3\" opacity=\".3\"/><rect x=\"34\" y=\"54\" width=\"62\" height=\"26\" rx=\"7\" stroke=\"currentColor\" stroke-width=\"1.3\" opacity=\".7\"/><rect x=\"206\" y=\"62\" width=\"62\" height=\"26\" rx=\"7\" stroke=\"currentColor\" stroke-width=\"1.3\" opacity=\".7\"/><circle cx=\"153\" cy=\"70\" r=\"16\" stroke=\"currentColor\" stroke-width=\"1.4\" opacity=\".75\" stroke-dasharray=\"4 3\"/><path d=\"M147 70 h12 M153 64 v12\" stroke=\"currentColor\" stroke-width=\"1.4\" opacity=\".55\"/><path d=\"M48 66 h34 M220 74 h34\" stroke=\"currentColor\" stroke-width=\"2.5\" opacity=\".3\"/></svg>",
       "stars": 2,
-      "auto_note": "границы контекстов из кода не выводятся — это гипотеза по структуре модулей",
       "cost": "L",
+      "recommended": false,
       "found": "Модули совпадают с папками, но Pricing и Catalog делят словарь терминов — граница спорная",
       "value": "Карта контекстов ловит расползание доменной модели раньше, чем оно попадёт в код",
-      "recommended": false
+      "auto_note": "границы контекстов из кода не выводятся — это гипотеза по структуре модулей"
     },
     {
       "id": "gotchas",
       "title": "Грабли и неочевидности",
+      "summary": "37 TODO/HACK и 4 «временных» обхода старше двух лет",
+      "art": "<svg viewBox=\"0 0 320 120\" xmlns=\"http://www.w3.org/2000/svg\" stroke-linecap=\"round\" stroke-linejoin=\"round\" fill=\"none\"><path d=\"M14 84 H306\" stroke=\"currentColor\" stroke-width=\"1.4\" opacity=\".5\"/><path d=\"M34 78 v12\" stroke=\"currentColor\" stroke-width=\"1.3\" opacity=\".35\"/><path d=\"M66 78 v12\" stroke=\"currentColor\" stroke-width=\"1.3\" opacity=\".35\"/><path d=\"M98 78 v12\" stroke=\"currentColor\" stroke-width=\"1.3\" opacity=\".35\"/><path d=\"M130 78 v12\" stroke=\"currentColor\" stroke-width=\"1.3\" opacity=\".35\"/><path d=\"M162 78 v12\" stroke=\"currentColor\" stroke-width=\"1.3\" opacity=\".35\"/><path d=\"M194 78 v12\" stroke=\"currentColor\" stroke-width=\"1.3\" opacity=\".35\"/><path d=\"M226 78 v12\" stroke=\"currentColor\" stroke-width=\"1.3\" opacity=\".35\"/><path d=\"M258 78 v12\" stroke=\"currentColor\" stroke-width=\"1.3\" opacity=\".35\"/><path d=\"M290 78 v12\" stroke=\"currentColor\" stroke-width=\"1.3\" opacity=\".35\"/><circle cx=\"66\" cy=\"84\" r=\"4\" fill=\"currentColor\" opacity=\".3\"/><circle cx=\"130\" cy=\"84\" r=\"4\" fill=\"currentColor\" opacity=\".3\"/><circle cx=\"226\" cy=\"84\" r=\"4\" fill=\"currentColor\" opacity=\".3\"/><path d=\"M98 40 l14 24 h-28z\" stroke=\"var(--warning)\" stroke-width=\"1.6\" fill=\"var(--warning)\" fill-opacity=\".18\"/><path d=\"M98 48 v6 M98 59 v.5\" stroke=\"var(--warning)\" stroke-width=\"1.6\"/><path d=\"M98 64 V80\" stroke=\"var(--warning)\" stroke-width=\"1.3\" stroke-dasharray=\"3 3\"/><path d=\"M226 34 l16 28 h-32z\" stroke=\"var(--danger)\" stroke-width=\"1.6\" fill=\"var(--danger)\" fill-opacity=\".16\"/><path d=\"M226 44 v7 M226 56 v.5\" stroke=\"var(--danger)\" stroke-width=\"1.6\"/><path d=\"M226 62 V80\" stroke=\"var(--danger)\" stroke-width=\"1.3\" stroke-dasharray=\"3 3\"/><path d=\"M258 96 a18 12 0 1 0 18 -12\" stroke=\"currentColor\" stroke-width=\"1.5\" opacity=\".6\"/><path d=\"M272 78 l6 6 -8 4\" stroke=\"currentColor\" stroke-width=\"1.5\" opacity=\".6\"/></svg>",
       "stars": 1,
-      "auto_note": "почти не автоматизируется: собирается из TODO, комментариев и истории коммитов",
       "cost": "L",
+      "recommended": false,
       "found": "37 TODO/HACK-комментариев, 4 «временных» обходных пути старше двух лет",
       "value": "Именно об это спотыкаются новые агенты и новые люди — дороже всего в поддержке",
-      "recommended": false
+      "auto_note": "почти не автоматизируется: собирается из TODO, комментариев и истории коммитов"
     }
   ]
 }

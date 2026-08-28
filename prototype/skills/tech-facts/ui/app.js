@@ -362,6 +362,17 @@ function fetchFile(name, seq) {
   return fileCache.get(key);
 }
 
+/** Журнал решений человека — им UI помнит, что уже отправлено, даже после перезагрузки. */
+async function fetchDecisions() {
+  if (EMBEDDED) return [];
+  try {
+    const res = await fetch('/api/decisions', { cache: 'no-store' });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data) ? data : [];
+  } catch { return []; }
+}
+
 async function postDecision(body) {
   if (EMBEDDED) throw new Error('Это read-only экспорт: решения принимаются в живом UI у агента');
   const res = await fetch('/api/decision', {
@@ -390,10 +401,25 @@ function connectSSE() {
 /* ============================== Оркестрация ============================== */
 
 const app = $('#app');
-let renderedKey = null;           // `${stage}:${seq}` последнего рендера
-const submittedKeys = new Set();  // формы, уже отправленные в этой сессии
+const navRoot = $('#app-nav');
+
+/* Всё, что прислал агент, живёт одновременно: стадии не сменяют друг друга, а копятся.
+   Человек ходит между ними сам — сайдбар доступен всегда. */
+const store = { state: null, picker: null, review: null, site: null, decisions: [] };
+let route = { section: null, id: null };
+let pinned = false;             // человек сам выбрал раздел — не выдёргиваем его оттуда
+let bootstrapped = false;       // deep-link из адресной строки учитываем один раз, на старте
+let renderedContentKey = null;
 
 const STAGE_LABELS = { picker: 'Выбор срезов', review: 'Ревью фактов', explore: 'Эксплорер', idle: 'Ожидание агента' };
+
+/** Короткий отпечаток содержимого: им ловим «контент изменился» и не перерисовываем зря. */
+function fp(value) {
+  const s = JSON.stringify(value ?? null);
+  let hash = 5381;
+  for (let i = 0; i < s.length; i++) hash = ((hash * 33) ^ s.charCodeAt(i)) >>> 0;
+  return hash.toString(36);
+}
 
 function setHeader(stage, project, metaText) {
   $('#project-name').textContent = project || 'tech-facts';
@@ -404,36 +430,288 @@ function setHeader(stage, project, metaText) {
   $('#header-meta').textContent = metaText || '';
 }
 
-async function refresh(force = false) {
+/* ---------- порции ревью ---------- */
+
+/** review.json: `batches[]` (срезы извлекаются параллельно) либо один батч в корне. */
+function reviewBatches() {
+  const p = store.review;
+  if (!p) return [];
+  if (Array.isArray(p.batches)) return p.batches.filter(b => b && b.batch);
+  if (Array.isArray(p.facts)) {
+    return [{ batch: p.batch || 'batch', title: p.title, note: p.note, diagram: p.diagram, facts: p.facts }];
+  }
+  return [];
+}
+
+function findBatch(id) { return reviewBatches().find(b => b.batch === id) || null; }
+function batchFacts(b) { return Array.isArray(b && b.facts) ? b.facts : []; }
+/** Ждут решения человека: всё, что агент не подтвердил сам. */
+function batchPending(b) { return batchFacts(b).filter(f => !f.auto_approved).length; }
+function batchTitle(b) { return b.title || `Ревью: ${b.batch}`; }
+
+/** Решение по этой версии батча уже улетело агенту (переживает перезагрузку страницы). */
+function batchSent(b) {
+  const mark = fp(batchFacts(b));
+  return store.decisions.some(d => d.stage === 'review' && d.data
+    && d.data.batch === b.batch && d.data.fingerprint === mark);
+}
+
+/** extracting → ready → sent → applied. */
+function batchStatus(b) {
+  if (b.status === 'applied') return 'applied';
+  if (b.status === 'extracting' || (!batchFacts(b).length && b.status !== 'ready')) return 'extracting';
+  return batchSent(b) ? 'sent' : 'ready';
+}
+
+const BATCH_STATUS_META = {
+  extracting: { label: 'извлекается', cls: 'badge-neutral' },
+  ready: { label: 'ждёт вас', cls: 'badge-candidate' },
+  sent: { label: 'отправлено', cls: 'badge-auto' },
+  applied: { label: 'учтено', cls: 'badge-active' },
+};
+
+/* ---------- решения человека ---------- */
+
+function lastPickerDecision() {
+  let found = null;
+  for (const d of store.decisions) if (d.stage === 'picker') found = d;
+  return found;
+}
+
+/* ---------- маршрут ---------- */
+
+const SECTIONS = ['picker', 'review', 'explore'];
+
+function parseRoute() {
+  const raw = decodeURIComponent(location.hash.replace(/^#\/?/, ''));
+  if (!raw) return null;
+  const parts = raw.split('/');
+  if (!SECTIONS.includes(parts[0])) return null;
+  return { section: parts[0], id: parts[1] ? decodeURIComponent(parts[1]) : null };
+}
+
+function routeHref(section, id) { return `#/${section}${id ? '/' + encodeURIComponent(id) : ''}`; }
+
+function navigate(section, id) {
+  pinned = true;
+  const next = routeHref(section, id);
+  if (location.hash === next) { route = { section, id: id || null }; render(); }
+  else location.hash = next;
+}
+
+/** Адрес показывает, где человек находится. Помечаем такую запись как «привёл агент»:
+    после перезагрузки она не должна выглядеть осознанным deep-link'ом и прикалывать к разделу. */
+function syncHash() {
+  if (!route.section) return;
+  const href = routeHref(route.section, route.section === 'explore' ? null : route.id);
+  if (route.section === 'explore' && location.hash.startsWith('#/explore')) return;
+  if (location.hash !== href) history.replaceState({ tfAuto: true }, '', href);
+}
+
+function routeValid(r) {
+  if (!r || !r.section) return false;
+  if (r.section === 'picker') return !!store.picker;
+  if (r.section === 'review') return !!findBatch(r.id);
+  if (r.section === 'explore') return !!store.site;
+  return false;
+}
+
+/** Куда смотреть, если человек сам никуда не уходил: туда, где агент ждёт решения. */
+function defaultRoute() {
+  const stage = store.state && store.state.stage;
+  const batches = reviewBatches();
+  const waiting = batches.find(b => batchStatus(b) === 'ready');
+  if (waiting) return { section: 'review', id: waiting.batch };
+  if (stage === 'explore' && store.site) return { section: 'explore', id: null };
+  if (stage === 'picker' && store.picker) return { section: 'picker', id: null };
+  if (store.site) return { section: 'explore', id: null };
+  if (batches.length) return { section: 'review', id: batches[0].batch };
+  if (store.picker) return { section: 'picker', id: null };
+  return { section: null, id: null };
+}
+
+/* ---------- загрузка состояния ---------- */
+
+async function refresh() {
   let data;
   try {
     data = await fetchState();
   } catch {
-    if (renderedKey !== 'idle') { renderedKey = 'idle'; renderIdle(); }
+    store.state = null;
+    renderIdle();
     return;
   }
   const state = data && data.state;
-  if (!state || !state.stage) {
-    if (renderedKey !== 'idle') { renderedKey = 'idle'; renderIdle(); }
+  if (!state || !state.stage) { store.state = null; renderIdle(); return; }
+  store.state = state;
+
+  if (EMBEDDED) {
+    /* Экспорт — только эксплорер: решения принимать некому. */
+    store.picker = null; store.review = null; store.decisions = [];
+    store.site = data.payload;
+    route = { section: 'explore', id: null };
+    render();
     return;
   }
-  const key = `${state.stage}:${state.seq}`;
-  /* Та же стадия и тот же seq — не перерисовываем, чтобы не съесть ввод человека. */
-  if (!force && key === renderedKey) return;
-  renderedKey = key;
+
+  const has = data.available || null;   // старый сервер поля не присылает — тогда пробуем всё
+  const want = name => !has || has[name] !== false;
+  const [picker, review, site, decisions] = await Promise.all([
+    want('picker') ? loadFile('picker.json', state.seq) : null,
+    want('review') ? loadFile('review.json', state.seq) : null,
+    want('site') ? loadFile('site/site.json', state.seq) : null,
+    fetchDecisions(),
+  ]);
+  store.picker = picker;
+  store.review = review;
+  store.site = site;
+  store.decisions = decisions;
+
+  const fromHash = parseRoute();
+  if (!bootstrapped) {
+    bootstrapped = true;
+    const typedByHuman = !(history.state && history.state.tfAuto);
+    if (fromHash && routeValid(fromHash) && typedByHuman) { route = fromHash; pinned = true; }
+    else if (fromHash && routeValid(fromHash)) route = fromHash;   // вернулись туда же, но ведёт по-прежнему агент
+  }
+  if (!pinned || !routeValid(route)) route = defaultRoute();
+  syncHash();
+  render();
+}
+
+async function loadFile(name, seq) {
+  try { return await fetchFile(name, seq); } catch { return null; }
+}
+
+window.addEventListener('hashchange', () => {
+  const r = parseRoute();
+  if (!r) return;
+  pinned = true;
+  if (r.section === route.section && r.id === route.id) { render(); return; }
+  route = r;
+  render();
+});
+
+/* ---------- рендер ---------- */
+
+function contentKey() {
+  switch (route.section) {
+    case 'picker': return `picker:${fp(store.picker)}:${fp(lastPickerDecision())}`;
+    case 'review': {
+      const b = findBatch(route.id);
+      return `review:${route.id}:${fp(b)}:${batchStatus(b || {})}`;
+    }
+    case 'explore': return `explore:${fp(store.site)}`;
+    default: return 'idle';
+  }
+}
+
+function render() {
+  renderNav();
+  const key = contentKey();
+  if (key === renderedContentKey) {
+    /* Тот же контент — не съедаем ввод человека; внутри эксплорера меняем только страницу. */
+    if (route.section === 'explore') renderExplorePage();
+    return;
+  }
+  renderedContentKey = key;
   diagrams = [];
-  switch (state.stage) {
-    case 'picker': renderPicker(state, data.payload, key); break;
-    case 'review': renderReview(state, data.payload, key); break;
-    case 'explore': renderExplore(state, data.payload, key); break;
+  switch (route.section) {
+    case 'picker': renderPicker(); break;
+    case 'review': renderReviewBatch(findBatch(route.id)); break;
+    case 'explore': renderExplore(); break;
     default: renderIdle();
   }
 }
 
+/** Решение отправлено — обновляем состояние (кто отправлен, что дальше) и идём за агентом. */
+async function afterDecision() {
+  pinned = false;              // дальше ведёт агент: покажем следующую порцию, как только она готова
+  renderedContentKey = null;
+  await refresh();
+}
+
+/* ---------- сайдбар ---------- */
+
+function navItem({ section, id, label, icon: iconName, meta, badge, active }) {
+  return h('button', {
+    class: `nav-item${active ? ' active' : ''}`,
+    'aria-current': active ? 'page' : null,
+    onclick: () => navigate(section, id),
+  },
+    iconName ? icon(iconName, 16) : null,
+    h('span', { class: 'nav-text' },
+      h('span', { class: 'nav-label' }, label),
+      badge || (meta ? h('span', { class: 'nav-meta' }, meta) : null),
+    ),
+  );
+}
+
+function renderNav() {
+  if (!navRoot) return;
+  const project = (store.state && store.state.project) || (store.picker && store.picker.project)
+    || (store.site && store.site.project) || 'проект';
+  const batches = reviewBatches();
+  let step = 0;   // шаги нумеруем по тому, что реально есть (в экспорте — только эксплорер)
+  const parts = [
+    h('div', { class: 'nav-project' },
+      h('div', { class: 'name' }, project),
+      h('div', { class: 'meta' }, STAGE_LABELS[(store.state && store.state.stage)] || ''),
+    ),
+  ];
+
+  if (store.picker) {
+    const sent = lastPickerDecision();
+    const selectedCount = sent ? (sent.data.selected || []).length : 0;
+    parts.push(h('div', { class: 'nav-group' },
+      h('div', { class: 'sidebar-label' }, `Шаг ${++step}`),
+      navItem({
+        section: 'picker', label: 'Срезы', icon: 'flag',
+        meta: sent ? `${selectedCount} в работе — можно изменить` : 'ждёт вашего выбора',
+        active: route.section === 'picker',
+      }),
+    ));
+  }
+
+  if (batches.length) {
+    parts.push(h('div', { class: 'nav-group' },
+      h('div', { class: 'sidebar-label' }, `Шаг ${++step} · ревью`,
+        h('span', { class: 'count' }, String(batches.length))),
+      h('div', { class: 'nav-list' }, batches.map(b => {
+        const st = batchStatus(b);
+        return navItem({
+          section: 'review', id: b.batch, label: batchTitle(b).replace(/^Ревью:\s*/i, ''),
+          icon: st === 'extracting' ? 'dot' : 'graph',
+          /* Ждущая порция кричит бейджем, остальные — тихой подписью. */
+          badge: st === 'ready'
+            ? h('span', { class: `badge ${BATCH_STATUS_META[st].cls} nav-badge` }, `${batchPending(b)} ждут вас`)
+            : null,
+          meta: st === 'extracting' ? 'агент извлекает' : BATCH_STATUS_META[st].label,
+          active: route.section === 'review' && route.id === b.batch,
+        });
+      })),
+    ));
+  }
+
+  if (store.site) {
+    parts.push(h('div', { class: 'nav-group' },
+      h('div', { class: 'sidebar-label' }, `Шаг ${++step}`),
+      navItem({ section: 'explore', label: 'Эксплорер', icon: 'book', active: route.section === 'explore' }),
+    ));
+  }
+
+  parts.push(h('div', { class: 'nav-extra', id: 'nav-extra' }));
+  navRoot.replaceChildren(...parts);
+}
+
+function navExtraRoot() { return $('#nav-extra'); }
+
 /* ============================== IDLE ============================== */
 
 function renderIdle() {
+  renderedContentKey = 'idle';
   setHeader('idle', null, '');
+  if (navRoot) navRoot.replaceChildren();
   app.replaceChildren(
     h('div', { class: 'empty-state anim-in' },
       icon('graph', 36),
@@ -443,11 +721,12 @@ function renderIdle() {
   );
 }
 
-function sentState(title, note) {
+function sentState(title, note, extra) {
   return h('div', { class: 'sent-state anim-in' },
     h('div', { class: 'spinner', 'aria-hidden': 'true' }),
     h('h1', { class: 'page-title' }, title),
     h('p', {}, note),
+    extra || null,
   );
 }
 
@@ -538,53 +817,148 @@ function factCard(fact) {
 
 /* ============================== PICKER ============================== */
 
-function renderPicker(state, payload, key) {
-  setHeader('picker', payload.project, '');
-  if (submittedKeys.has(key)) {
-    app.replaceChildren(h('div', { class: 'stage-wrap' },
-      sentState('Выбор улетел агенту — он приступил к извлечению',
-        'Когда первая порция фактов будет готова, здесь откроется ревью.')));
-    return;
-  }
+/** Сколько срезов шелл отмечает сам. Выбор из трёх — решение, выбор из семи — работа. */
+const PRESELECT_MAX = 3;
 
-  const selected = new Set(payload.slices.filter(s => s.recommended).map(s => s.id));
+/** Иллюстрация среза: рисунок присылает агент, шелл не диктует сюжет — только вычищает
+    исполняемое и внешние ссылки. Нет рисунка (или он не SVG) — карточка живёт без него. */
+function sliceArt(raw) {
+  if (typeof raw !== 'string' || !raw.trim().startsWith('<svg')) return null;
+  const tpl = document.createElement('template');
+  tpl.innerHTML = raw.trim();
+  const svg = tpl.content.querySelector('svg');
+  if (!svg) return null;
+  svg.querySelectorAll('script, foreignObject, iframe, image, a').forEach(n => n.remove());
+  const scrub = el => {
+    for (const attr of [...el.attributes]) {
+      const name = attr.name.toLowerCase();
+      if (name === 'xmlns' || name.startsWith('xmlns:')) continue;
+      if (name.startsWith('on') || name.endsWith('href') || /(https?:)?\/\//.test(attr.value)) {
+        el.removeAttribute(attr.name);
+      }
+    }
+    for (const child of [...el.children]) scrub(child);
+  };
+  scrub(svg);
+  svg.removeAttribute('width');
+  svg.removeAttribute('height');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('focusable', 'false');
+  return h('div', { class: 'slice-art' }, svg);
+}
+
+/** Короткая подпись к звёздам; нюансы извлечения — в «подробнее». */
+function autoLabel(stars) {
+  if (stars >= 4) return 'извлекается автоматически';
+  if (stars === 3) return 'частично автоматически';
+  return 'гипотеза — нужна валидация';
+}
+
+function ledeEl(intro) {
+  const text = intro || '';
+  if (!text) return null;
+  if (text.length <= 260) return h('p', { class: 'lede' }, text);
+  const p = h('p', { class: 'lede clamped' }, text);
+  const more = h('button', {
+    class: 'link-btn', type: 'button',
+    onclick: e => {
+      const on = p.classList.toggle('clamped');
+      e.currentTarget.textContent = on ? 'показать полностью' : 'свернуть';
+    },
+  }, 'показать полностью');
+  return h('div', {}, p, more);
+}
+
+function renderPicker() {
+  const payload = store.picker;
+  if (!payload) { renderIdle(); return; }
+  setHeader('picker', payload.project, '');
+
+  const sent = lastPickerDecision();
+  const sentSelected = sent ? new Set(sent.data.selected || []) : null;
+
+  /* Рекомендованные — первыми: предвыбранное человек видит сразу, без прокрутки. */
+  const slices = [...(payload.slices || [])].sort((a, b) => (b.recommended ? 1 : 0) - (a.recommended ? 1 : 0));
+  const selected = sentSelected
+    ? new Set([...sentSelected].filter(id => slices.some(s => s.id === id)))
+    : new Set(slices.filter(s => s.recommended).slice(0, PRESELECT_MAX).map(s => s.id));
   const form = { autoApprove: payload.auto_approve === 'high' ? 'high' : 'none', comment: '' };
+
+  const diff = () => ({
+    added: sentSelected ? [...selected].filter(id => !sentSelected.has(id)) : [...selected],
+    removed: sentSelected ? [...sentSelected].filter(id => !selected.has(id)) : [],
+  });
 
   const countEl = h('span', { class: 'action-count tnum' });
   const updateCount = () => {
-    countEl.textContent = `${selected.size} выбрано`;
-    submitBtn.disabled = selected.size === 0;
+    const { added, removed } = diff();
+    countEl.replaceChildren(`${selected.size} из ${slices.length} выбрано`);
+    if (sentSelected) {
+      const changes = [added.length ? `+${added.length}` : null, removed.length ? `−${removed.length}` : null]
+        .filter(Boolean).join(' ');
+      if (changes) countEl.append(h('span', { class: 'action-diff' }, changes));
+      submitBtn.disabled = !(added.length || removed.length);
+      submitBtn.replaceChildren(icon('send', 14), changes ? 'Отправить изменения' : 'Изменений нет');
+    } else {
+      submitBtn.disabled = selected.size === 0;
+    }
   };
 
-  const cards = payload.slices.map(slice => {
+  const cards = slices.map(slice => {
     const checked = selected.has(slice.id);
+    const more = (slice.found || slice.value || slice.auto_note)
+      ? h('details', { class: 'slice-more' },
+        h('summary', {}, icon('chevron', 12, 'chev'), 'подробнее'),
+        h('div', { class: 'slice-more-body' },
+          slice.found ? h('div', { class: 'slice-kv' }, h('span', { class: 'k' }, 'Что нашла разведка'), slice.found) : null,
+          slice.value ? h('div', { class: 'slice-kv' }, h('span', { class: 'k' }, 'Зачем это агенту'), slice.value) : null,
+          slice.auto_note ? h('div', { class: 'slice-kv' }, h('span', { class: 'k' }, 'Как извлекается'), slice.auto_note) : null,
+        ),
+      )
+      : null;
+
+    const stateBadge = h('span', { class: 'slice-chips' });
     const card = h('div', {
       class: 'card slice-card anim-in',
       role: 'checkbox', tabindex: '0',
       'aria-checked': String(checked),
       'aria-label': `Срез: ${slice.title}`,
     },
-      h('div', { class: 'slice-top' },
-        h('span', { class: 'slice-check', 'aria-hidden': 'true' }, icon('check', 13)),
-        h('h3', { class: 'slice-title' }, slice.title),
-        h('span', { class: `cost-badge cost-${esc(slice.cost || '')}` }, slice.cost || '?'),
-      ),
-      h('div', { class: 'stars-row' },
-        h('span', { class: 'stars', role: 'img', 'aria-label': `Автоматизируемость: ${slice.stars} из 5` },
-          [1, 2, 3, 4, 5].map(n => starIcon(n <= slice.stars))),
-        h('span', { class: 'auto-note' }, slice.auto_note || ''),
-      ),
-      slice.found ? h('div', { class: 'slice-found' }, h('span', { class: 'k' }, 'Что нашла разведка'), slice.found) : null,
-      slice.value ? h('div', { class: 'slice-value' }, h('span', { class: 'k' }, 'Зачем это агенту'), slice.value) : null,
-      h('div', { class: 'slice-chips' },
-        slice.recommended ? h('span', { class: 'badge badge-primary' }, 'рекомендовано') : null,
-        (slice.stars <= 2) ? h('span', { class: 'badge badge-warn' }, 'гипотеза — потребует валидации') : null,
+      sliceArt(slice.art),
+      h('div', { class: 'slice-body' },
+        h('div', { class: 'slice-top' },
+          h('span', { class: 'slice-check', 'aria-hidden': 'true' }, icon('check', 13)),
+          h('h3', { class: 'slice-title' }, slice.title),
+          h('span', { class: `cost-badge cost-${esc(slice.cost || '')}` }, slice.cost || '?'),
+        ),
+        h('p', { class: 'slice-summary' }, slice.summary || slice.found || ''),
+        h('div', { class: 'stars-row' },
+          h('span', { class: 'stars', role: 'img', 'aria-label': `Автоматизируемость: ${slice.stars} из 5` },
+            [1, 2, 3, 4, 5].map(n => starIcon(n <= slice.stars))),
+          h('span', { class: 'auto-note' }, autoLabel(slice.stars)),
+        ),
+        stateBadge,
+        more,
       ),
     );
+
+    const syncBadge = () => {
+      const inWork = sentSelected && sentSelected.has(slice.id);
+      const on = selected.has(slice.id);
+      const chips = [];
+      if (inWork && on) chips.push(h('span', { class: 'badge badge-auto' }, 'в работе у агента'));
+      if (inWork && !on) chips.push(h('span', { class: 'badge badge-rejected' }, 'снимаем — уедет агенту'));
+      if (!inWork && on && sentSelected) chips.push(h('span', { class: 'badge badge-primary' }, 'добавляем — уедет агенту'));
+      if (slice.stars <= 2) chips.push(h('span', { class: 'badge badge-warn' }, 'гипотеза — потребует валидации'));
+      stateBadge.replaceChildren(...chips);
+    };
+    syncBadge();
+
     const toggle = () => {
       const now = !selected.has(slice.id);
       if (now) selected.add(slice.id); else selected.delete(slice.id);
       card.setAttribute('aria-checked', String(now));
+      syncBadge();
       updateCount();
     };
     card.addEventListener('click', e => {
@@ -592,6 +966,7 @@ function renderPicker(state, payload, key) {
       toggle();
     });
     card.addEventListener('keydown', e => {
+      if (e.target !== card) return;   /* пробел внутри «подробнее» — не выбор карточки */
       if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); toggle(); }
     });
     return card;
@@ -601,35 +976,46 @@ function renderPicker(state, payload, key) {
     class: 'btn btn-primary',
     onclick: async e => {
       const btn = e.currentTarget;
+      const { added, removed } = diff();
       btn.disabled = true;
       btn.textContent = 'Отправляем…';
       try {
         await postDecision({
-          stage: 'picker', type: 'picker',
-          data: { selected: [...selected], auto_approve: form.autoApprove, comment: form.comment.trim() },
+          stage: 'picker', type: sentSelected ? 'picker_amend' : 'picker',
+          data: {
+            selected: [...selected], added, removed,
+            auto_approve: form.autoApprove, comment: form.comment.trim(),
+          },
         });
-        submittedKeys.add(key);
-        renderPicker(state, payload, key);
+        await afterDecision();
       } catch (err) {
         btn.disabled = false;
         btn.replaceChildren(icon('send', 14), 'Отправить агенту');
         alert(`Не удалось отправить: ${err.message}. Сервер агента жив?`);
       }
     },
-  }, icon('send', 14), 'Отправить агенту');
+  }, icon('send', 14), sentSelected ? 'Отправить изменения' : 'Отправить агенту');
 
   app.replaceChildren(
     h('div', { class: 'stage-wrap' },
       h('div', { class: 'stage-head anim-in' },
         h('h1', { class: 'page-title' }, 'Какие срезы извлекать?'),
-        h('p', { class: 'lede' }, payload.intro || ''),
+        ledeEl(payload.intro),
+        sentSelected
+          ? h('p', { class: 'picker-hint sent' }, icon('check', 13),
+            `Выбор отправлен агенту ${sent.at ? fmtDate(sent.at) : ''} — он уже извлекает. `
+            + 'Состав можно менять: добавленное и снятое уедет агенту отдельным сообщением.')
+          : (selected.size && selected.size < slices.length
+            ? h('p', { class: 'picker-hint' }, icon('check', 13),
+              `Отмечено ${selected.size} — минимум, который даёт максимум связей. Остальное включайте по желанию.`)
+            : null),
       ),
       h('div', { class: 'slice-grid' }, cards),
     ),
     h('div', { class: 'action-bar' },
       h('div', { class: 'action-bar-inner' },
         countEl,
-        h('label', { class: 'action-field' }, 'авто-подтверждение',
+        sentSelected ? null : h('label', { class: 'action-field' }, 'авто-подтверждение',
           h('select', {
             'aria-label': 'Режим авто-подтверждения',
             onchange: e => { form.autoApprove = e.target.value; },
@@ -654,16 +1040,31 @@ function renderPicker(state, payload, key) {
 
 /* ============================== REVIEW ============================== */
 
-function renderReview(state, payload, key) {
-  setHeader('review', payload.project, '');
-  if (submittedKeys.has(key)) {
+function renderReviewBatch(b) {
+  if (!b) { renderIdle(); return; }
+  const project = (store.review && store.review.project) || (store.state && store.state.project);
+  setHeader('review', project, '');
+  const status = batchStatus(b);
+  const others = reviewBatches().filter(x => x.batch !== b.batch);
+  const nextWaiting = others.find(x => batchStatus(x) === 'ready');
+
+  if (status === 'extracting') {
     app.replaceChildren(h('div', { class: 'stage-wrap' },
-      sentState('Ревью улетело агенту',
-        'Агент разбирает ваши решения. Следующая порция или сайт появятся здесь.')));
+      sentState(`${batchTitle(b)} — агент извлекает`,
+        b.note || 'Срез появится здесь, как только агент его достанет. Остальные порции доступны в сайдбаре.')));
+    return;
+  }
+  if (status === 'sent' || status === 'applied') {
+    app.replaceChildren(h('div', { class: 'stage-wrap' },
+      sentState(status === 'applied' ? `${batchTitle(b)} — учтено агентом` : `${batchTitle(b)} — решения улетели агенту`,
+        nextWaiting ? 'Следующая порция уже ждёт вас.' : 'Остальные порции — в сайдбаре слева.',
+        nextWaiting ? h('button', {
+          class: 'btn btn-primary', onclick: () => navigate('review', nextWaiting.batch),
+        }, batchTitle(nextWaiting), icon('chevron', 14)) : null)));
     return;
   }
 
-  const facts = payload.facts || [];
+  const facts = batchFacts(b);
   const decisions = new Map(); // id → {action, comment}
   let globalComment = '';
 
@@ -705,7 +1106,8 @@ function renderReview(state, payload, key) {
     }
     return {
       stage: 'review', type: 'review',
-      data: { batch: payload.batch, decisions: out, global_comment: globalComment.trim() },
+      /* fingerprint — служебное поле шелла: по нему UI помнит, что эта версия порции отправлена. */
+      data: { batch: b.batch, fingerprint: fp(facts), decisions: out, global_comment: globalComment.trim() },
     };
   }
 
@@ -823,8 +1225,7 @@ function renderReview(state, payload, key) {
       btn.textContent = 'Отправляем…';
       try {
         await postDecision(buildDecisionPayload());
-        submittedKeys.add(key);
-        renderReview(state, payload, key);
+        await afterDecision();
       } catch (err) {
         btn.disabled = false;
         btn.replaceChildren(icon('send', 14), 'Отправить ревью');
@@ -833,16 +1234,22 @@ function renderReview(state, payload, key) {
     },
   }, icon('send', 14), 'Отправить ревью');
 
+  const stillExtracting = others.filter(x => batchStatus(x) === 'extracting').length;
+
   app.replaceChildren(
     h('div', { class: 'stage-wrap' },
       h('div', { class: 'stage-head anim-in' },
         h('div', { style: 'display:flex; align-items:baseline; gap:14px; flex-wrap:wrap;' },
-          h('h1', { class: 'page-title' }, payload.title || `Ревью: ${payload.batch}`),
+          h('h1', { class: 'page-title' }, batchTitle(b)),
           progressEl(),
         ),
-        payload.note ? h('p', { class: 'lede' }, payload.note) : null,
+        b.note ? h('p', { class: 'lede' }, b.note) : null,
+        stillExtracting
+          ? h('p', { class: 'picker-hint' }, icon('dot', 13),
+            `Параллельно извлекается ещё ${stillExtracting} — порции появятся в сайдбаре, ревьюить можно в любом порядке.`)
+          : null,
       ),
-      payload.diagram?.mermaid ? diagramCard('Диаграмма среза', payload.diagram.mermaid) : null,
+      b.diagram?.mermaid ? diagramCard('Диаграмма среза', b.diagram.mermaid) : null,
 
       needsAnswer.length ? h('section', { class: 'section-gap needs-answer-section' },
         h('h2', { class: 'review-section-title' }, icon('alert', 16), 'Нужен ваш ответ',
@@ -903,42 +1310,38 @@ function matchesFilter(fact, filter) {
   return true;
 }
 
+/** Внутри эксплорера маршрут длиннее: `#/explore/<страница>/<факт>`. */
 function parseHash() {
-  const raw = decodeURIComponent(location.hash.replace(/^#/, ''));
-  if (!raw) return { pageId: null, factId: null };
-  const slash = raw.indexOf('/');
-  if (slash === -1) return { pageId: raw, factId: null };
-  return { pageId: raw.slice(0, slash), factId: raw.slice(slash + 1) || null };
+  const raw = decodeURIComponent(location.hash.replace(/^#\/?/, ''));
+  const parts = raw ? raw.split('/') : [];
+  if (parts[0] !== 'explore') return { pageId: null, factId: null };
+  return { pageId: parts[1] ? decodeURIComponent(parts[1]) : null, factId: parts[2] ? decodeURIComponent(parts[2]) : null };
 }
 
-window.addEventListener('hashchange', () => {
-  if (exploreCtx && renderedKey === exploreCtx.key) renderExplorePage();
-});
-
-async function renderExplore(state, site, key) {
+async function renderExplore() {
+  const site = store.site;
+  if (!site) { renderIdle(); return; }
+  const key = contentKey();
   setHeader('explore', site.project, site.generated_at ? `данные от ${fmtDate(site.generated_at)}` : '');
 
   let facts = [];
   try {
-    facts = await fetchFile('facts.json', state.seq);
+    facts = await fetchFile('site/facts.json', store.state.seq);
     if (!Array.isArray(facts)) facts = [];
   } catch { facts = []; }
-  if (renderedKey !== key) return; // пока грузили — стадия сменилась
+  if (renderedContentKey !== key) return; // пока грузили — раздел сменился
 
   exploreCtx = { key, site, facts, statusFilter: new Set() };
 
-  const sidebar = h('aside', { class: 'sidebar' },
-    h('div', { class: 'sidebar-project' },
-      h('div', { class: 'name' }, site.project || 'проект'),
-      site.generated_at ? h('div', { class: 'meta' }, `данные от ${fmtDate(site.generated_at)}`) : null,
-    ),
+  /* Навигация эксплорера живёт в общем сайдбаре — вторую колонку не заводим. */
+  const sidebar = h('div', { class: 'nav-explore' },
     buildSearchBox(),
     h('nav', { 'aria-label': 'Страницы' },
       h('div', { class: 'sidebar-label' }, 'Страницы'),
       h('div', { class: 'nav-list' },
         (site.pages || []).map(p => h('button', {
           class: 'nav-item', dataset: { pageId: p.id },
-          onclick: () => { location.hash = encodeURIComponent(p.id); },
+          onclick: () => { location.hash = `#/explore/${encodeURIComponent(p.id)}`; },
         }, icon(PAGE_ICONS.has(p.icon) ? p.icon : 'dot', 16), p.title || p.id)),
       ),
     ),
@@ -961,7 +1364,7 @@ async function renderExplore(state, site, key) {
 
   const mobileSelect = h('select', {
     'aria-label': 'Страница',
-    onchange: e => { location.hash = encodeURIComponent(e.target.value); },
+    onchange: e => { location.hash = `#/explore/${encodeURIComponent(e.target.value)}`; },
   }, (site.pages || []).map(p => h('option', { value: p.id }, p.title || p.id)));
 
   const content = h('div', { class: 'explore-content' }, h('div', { class: 'explore-page' }));
@@ -970,9 +1373,11 @@ async function renderExplore(state, site, key) {
   exploreCtx.content = content;
   exploreCtx.mobileSelect = mobileSelect;
 
+  const extra = navExtraRoot();
+  if (extra) extra.replaceChildren(sidebar);
+
   app.replaceChildren(
     h('div', { class: 'explore-layout' },
-      sidebar,
       h('div', { style: 'flex:1; min-width:0; display:flex; flex-direction:column;' },
         h('div', { class: 'mobile-nav' }, mobileSelect),
         content,
@@ -1053,8 +1458,8 @@ function pageForFact(fact) {
 function gotoFact(fact) {
   const pageId = pageForFact(fact);
   if (!pageId) return;
-  const target = `${encodeURIComponent(pageId)}/${encodeURIComponent(fact.id)}`;
-  if (location.hash === `#${target}`) renderExplorePage();
+  const target = `#/explore/${encodeURIComponent(pageId)}/${encodeURIComponent(fact.id)}`;
+  if (location.hash === target) renderExplorePage();
   else location.hash = target;
 }
 
