@@ -463,8 +463,86 @@ function batchTitle(b) { return b.title || `Ревью: ${b.batch}`; }
 /** Решение по этой версии батча уже улетело агенту (переживает перезагрузку страницы). */
 function batchSent(b) {
   const mark = fp(batchFacts(b));
-  return store.decisions.some(d => d.stage === 'review' && d.data
-    && d.data.batch === b.batch && d.data.fingerprint === mark);
+  return store.decisions.some(d => {
+    if (d.stage !== 'review' || !d.data) return false;
+    if (d.data.batch === b.batch && d.data.fingerprint === mark) return true;
+    // review_bulk: одна отправка накрывает несколько порций сразу.
+    const bulk = d.data.batches && d.data.batches[b.batch];
+    return !!bulk && bulk.fingerprint === mark;
+  });
+}
+
+/* ---------- черновики ревью ----------
+   Решения человека живут вне вида: переключение раздела и перезагрузка страницы их не теряют,
+   а сабмит «Отправить всё» собирает черновики всех готовых порций в одно решение. */
+
+const drafts = new Map(); // `<батч>::<fingerprint>` → {decisions: Map, globalComment}
+
+function draftKey(b) { return `${b.batch}::${fp(batchFacts(b))}`; }
+
+function draftStorageKey(b) {
+  const project = (store.review && store.review.project) || (store.state && store.state.project) || 'workdir';
+  return `techfacts:draft:${project}:${draftKey(b)}`;
+}
+
+/** Черновик порции: из памяти вкладки, иначе из localStorage, иначе пустой. */
+function loadDraft(b) {
+  const key = draftKey(b);
+  if (drafts.has(key)) return drafts.get(key);
+  let draft = { decisions: new Map(), globalComment: '' };
+  try {
+    const raw = localStorage.getItem(draftStorageKey(b));
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      draft = {
+        decisions: new Map(Object.entries(parsed.decisions || {})),
+        globalComment: parsed.globalComment || '',
+      };
+    }
+  } catch { /* приватный режим или заблокированный storage: черновик просто не переживёт перезагрузку */ }
+  drafts.set(key, draft);
+  return draft;
+}
+
+function saveDraft(b, draft) {
+  drafts.set(draftKey(b), draft);
+  try {
+    localStorage.setItem(draftStorageKey(b), JSON.stringify({
+      decisions: Object.fromEntries(draft.decisions),
+      globalComment: draft.globalComment,
+    }));
+  } catch { /* см. loadDraft */ }
+}
+
+function dropDraft(b) {
+  drafts.delete(draftKey(b));
+  try { localStorage.removeItem(draftStorageKey(b)); } catch { /* см. loadDraft */ }
+}
+
+/** Сколько решений накоплено в черновике (действие или комментарий). */
+function draftCount(draft) {
+  let n = 0;
+  for (const d of draft.decisions.values()) {
+    if (d && (d.action || (d.comment && d.comment.trim()))) n++;
+  }
+  return n;
+}
+
+/** Порции, которые ещё ждут человека — их и накрывает «Отправить всё». */
+function readyBatches() { return reviewBatches().filter(x => batchStatus(x) === 'ready'); }
+
+/** Решения из черновика в формате протокола: id → {action, comment}. */
+function draftDecisions(draft) {
+  const out = {};
+  for (const [id, d] of draft.decisions) {
+    if (!d || (!d.action && !(d.comment && d.comment.trim()))) continue;
+    const entry = {};
+    if (d.action) entry.action = d.action;
+    if (d.comment && d.comment.trim()) entry.comment = d.comment.trim();
+    if (!entry.action) entry.action = 'skip'; // только комментарий — фиксируем как skip с комментарием
+    out[id] = entry;
+  }
+  return out;
 }
 
 /** extracting → ready → sent → applied. */
@@ -1123,8 +1201,10 @@ function renderReviewBatch(b) {
   }
 
   const facts = batchFacts(b);
-  const decisions = new Map(); // id → {action, comment}
-  let globalComment = '';
+  const draft = loadDraft(b);
+  const decisions = draft.decisions; // id → {action, comment}
+  let globalComment = draft.globalComment;
+  const persist = () => { draft.globalComment = globalComment; saveDraft(b, draft); };
 
   const autoFacts = facts.filter(f => f.auto_approved);
   const needsAnswer = facts.filter(f => !f.auto_approved && (f.question || f.confidence === 'low'));
@@ -1155,20 +1235,28 @@ function renderReviewBatch(b) {
   }
 
   function buildDecisionPayload() {
-    const out = {};
-    for (const [id, d] of decisions) {
-      if (!d.action && !(d.comment && d.comment.trim())) continue;
-      const entry = {};
-      if (d.action) entry.action = d.action;
-      if (d.comment && d.comment.trim()) entry.comment = d.comment.trim();
-      if (!entry.action) entry.action = 'skip'; // только комментарий — фиксируем как skip с комментарием
-      out[id] = entry;
-    }
     return {
       stage: 'review', type: 'review',
       /* fingerprint — служебное поле шелла: по нему UI помнит, что эта версия порции отправлена. */
-      data: { batch: b.batch, fingerprint: fp(facts), decisions: out, global_comment: globalComment.trim() },
+      data: {
+        batch: b.batch, fingerprint: fp(facts),
+        decisions: draftDecisions(draft), global_comment: globalComment.trim(),
+      },
     };
+  }
+
+  /** Все готовые порции одним решением: человек проходит их в любом порядке и жмёт один раз. */
+  function buildBulkPayload() {
+    const batches = {};
+    for (const x of readyBatches()) {
+      const xd = x.batch === b.batch ? draft : loadDraft(x);
+      batches[x.batch] = {
+        fingerprint: fp(batchFacts(x)),
+        decisions: draftDecisions(xd),
+        global_comment: (x.batch === b.batch ? globalComment : xd.globalComment).trim(),
+      };
+    }
+    return { stage: 'review', type: 'review_bulk', data: { batches, global_comment: '' } };
   }
 
   /** Карточка ручного ревью. */
@@ -1189,15 +1277,18 @@ function renderReviewBatch(b) {
       extraFieldsDetails(fact),
     );
 
+    const savedComment = (decisions.get(fact.id) || {}).comment || '';
     const commentTa = h('textarea', {
       class: 'fact-comment-box', rows: '2', placeholder: 'Комментарий к решению — агент его прочитает',
-      'aria-label': `Комментарий к факту ${fact.id}`, hidden: true,
+      'aria-label': `Комментарий к факту ${fact.id}`, hidden: !savedComment,
       oninput: e => {
         const d = decisions.get(fact.id) || {};
         d.comment = e.target.value;
         decisions.set(fact.id, d);
+        persist();
       },
     });
+    commentTa.value = savedComment;
 
     const approveBtn = h('button', { class: 'btn btn-sm btn-approve' }, icon('check', 13), 'Принять');
     const rejectBtn = h('button', { class: 'btn btn-sm btn-reject' }, icon('x', 13), 'Отклонить');
@@ -1213,6 +1304,7 @@ function renderReviewBatch(b) {
       const d = decisions.get(fact.id) || {};
       d.action = d.action === action ? null : action; // повторный клик снимает решение
       decisions.set(fact.id, d);
+      persist();
       sync();
       updateProgress();
     }
@@ -1266,14 +1358,18 @@ function renderReviewBatch(b) {
       const d = decisions.get(fact.id) || {};
       d.action = d.action === 'unapprove' ? null : 'unapprove';
       decisions.set(fact.id, d);
+      persist();
       sync();
     });
     sync();
     return card;
   }
 
+  const ready = readyBatches();
+  const hasBulk = ready.length > 1;
+
   const submitBtn = h('button', {
-    class: 'btn btn-primary',
+    class: hasBulk ? 'btn btn-ghost' : 'btn btn-primary',
     onclick: async e => {
       const undecided = manual.length - decidedCount();
       if (undecided > 0) {
@@ -1285,14 +1381,42 @@ function renderReviewBatch(b) {
       btn.textContent = 'Отправляем…';
       try {
         await postDecision(buildDecisionPayload());
+        dropDraft(b);
         await afterDecision();
       } catch (err) {
         btn.disabled = false;
-        btn.replaceChildren(icon('send', 14), 'Отправить ревью');
+        btn.replaceChildren(icon('send', 14), 'Отправить порцию');
         alert(`Не удалось отправить: ${err.message}. Фоллбек — кнопка «Скопировать ревью JSON».`);
       }
     },
-  }, icon('send', 14), 'Отправить ревью');
+  }, icon('send', 14), hasBulk ? 'Только эту порцию' : 'Отправить ревью');
+
+  /* Сабмит на все готовые порции сразу: агента будим один раз, а не по разу на порцию. */
+  const bulkBtn = hasBulk ? h('button', {
+    class: 'btn btn-primary',
+    onclick: async e => {
+      const pending = ready.reduce((n, x) => n + batchPending(x), 0);
+      const decided = ready.reduce((n, x) => n + draftCount(x.batch === b.batch ? draft : loadDraft(x)), 0);
+      const undecided = pending - decided;
+      if (undecided > 0) {
+        const ok = confirm(
+          `Без решения осталось фактов: ${undecided} (в ${ready.length} порциях). Они останутся кандидатами. Отправить всё?`);
+        if (!ok) return;
+      }
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      btn.textContent = 'Отправляем…';
+      try {
+        await postDecision(buildBulkPayload());
+        for (const x of ready) dropDraft(x);
+        await afterDecision();
+      } catch (err) {
+        btn.disabled = false;
+        btn.replaceChildren(icon('send', 14), `Отправить всё (${ready.length})`);
+        alert(`Не удалось отправить: ${err.message}. Фоллбек — кнопка «Скопировать ревью JSON».`);
+      }
+    },
+  }, icon('send', 14), `Отправить всё (${ready.length})`) : null;
 
   const stillExtracting = others.filter(x => batchStatus(x) === 'extracting').length;
 
@@ -1313,6 +1437,10 @@ function renderReviewBatch(b) {
         stillExtracting
           ? h('p', { class: 'picker-hint' }, icon('dot', 13),
             `Параллельно извлекается ещё ${stillExtracting} — порции появятся в сайдбаре, ревьюить можно в любом порядке.`)
+          : null,
+        hasBulk
+          ? h('p', { class: 'picker-hint' }, icon('dot', 13),
+            `Порций ждёт вас: ${ready.length}. Решения сохраняются при переходе между ними — пройдите все и отправьте одной кнопкой «Отправить всё».`)
           : null,
       ),
       b.diagram?.mermaid ? diagramCard('Диаграмма среза', b.diagram.mermaid) : null,
@@ -1345,14 +1473,16 @@ function renderReviewBatch(b) {
           h('textarea', {
             rows: '1', placeholder: 'Общий комментарий к порции (необязательно)',
             'aria-label': 'Общий комментарий к ревью',
-            oninput: e => { globalComment = e.target.value; },
+            value: globalComment,
+            oninput: e => { globalComment = e.target.value; persist(); },
           }),
         ),
         h('button', {
           class: 'btn btn-ghost btn-sm', 'aria-label': 'Скопировать ревью в формате JSON — фоллбек, если агент не отвечает',
-          onclick: e => copyText(JSON.stringify(buildDecisionPayload(), null, 2), e.currentTarget),
+          onclick: e => copyText(JSON.stringify(bulkBtn ? buildBulkPayload() : buildDecisionPayload(), null, 2), e.currentTarget),
         }, icon('copy', 13), 'Скопировать ревью JSON'),
         submitBtn,
+        bulkBtn,
       ),
     ),
   );
