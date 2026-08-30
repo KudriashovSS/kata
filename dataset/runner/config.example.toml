@@ -1,0 +1,51 @@
+# Скопировать в config.toml и поправить под себя.
+# Провайдер и лимиты живут здесь, а не в коде: каждый жжёт свои токены.
+
+[repo]
+url = "https://github.com/mealie-recipes/mealie.git"
+clone = ".cache/mealie"                 # локальный клон, из него делаются worktree
+
+# mealie везёт собственные агентские файлы. Если их не убрать, memory-off
+# на самом деле «с чужой памятью» и вся дельта схлопнется.
+strip_files = ["AGENTS.md", "CLAUDE.md"]
+
+# Окружение для ВСЕХ команд репозитория (setup, тесты, агент).
+# UV_FROZEN обязателен: в pyproject у mealie скользящее окно exclude-newer,
+# без этого uv на каждый вызов переразрешает лок и падает на пинах внутри окна.
+env = { UV_FROZEN = "1" }
+
+setup_cmd = "uv sync --python python3.12"
+test_cmd = "uv run pytest"
+regression_scope = "tests/unit_tests"   # на чём ловим «починил своё, сломал чужое»
+test_timeout_sec = 1800
+
+[agent]
+# kind: claude | codex | null | oracle
+#   null   — ничего не делает: скрытые тесты ОБЯЗАНЫ упасть
+#   oracle — накатывает исходники эталонного PR (без тестов): ОБЯЗАНЫ пройти
+# Эти два прогоняются первыми и проверяют не модель, а сам каркас.
+kind = "claude"
+# acceptEdits разрешает правки файлов и простые файловые команды, но НЕ произвольный
+# Bash — а под -p спросить не у кого. Права из .claude/settings.json в свежем
+# (недоверенном) worktree под -p не применяются, поэтому список инструментов
+# задаём флагом CLI, а не файлом.
+cmd = [
+  "claude", "-p", "{prompt}",
+  "--output-format", "json",
+  "--permission-mode", "acceptEdits",
+  "--allowedTools", "Read,Glob,Grep,Edit,Write,Bash(uv run:*),Bash(git:*)",
+]
+timeout_sec = 3600
+
+[memory]
+# snapshot — читаем замороженный на C0 срез из файла (дёшево, не жжёт квоту xmemory)
+# xmemcli  — ходим в память по-настоящему (для демо и этапа 2)
+mode = "snapshot"
+snapshot = "dataset/facts/snapshot-c0.md"
+xmem_instance = ""
+
+# Шаг актуализации памяти (Stop-хук). На этапе 1 держим выключенным:
+# он добавляет memory-on лишний ход и лишние токены, то есть портит ровно ту
+# метрику, ради которой всё затевалось. Включать вместе с mode = "xmemcli",
+# когда памяти есть куда писать, и считать его токены отдельно.
+write_back = false
