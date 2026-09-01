@@ -1,0 +1,13 @@
+task,mode,seed,model,effort,valid_run,hidden_passed,hidden_total,task_success,regression_green,regression_failed,regression_errors,files_changed,insertions,deletions,wall_sec,output_tokens,cache_read_tokens,cache_creation_tokens,num_turns,estimated_api_cost_usd,agent_touched_tests,context_chars
+a1,memory-off,1,claude-sonnet-5,medium,true,21,21,true,true,0,0,3,84,1,281.1,22604,2979724,75019,62,1.6842222,false,0
+a1,memory-on,1,claude-sonnet-5,medium,true,21,21,true,true,0,0,3,91,1,186.3,14127,1738371,55262,42,1.0652403,false,7259
+a2,memory-off,1,claude-sonnet-5,medium,true,43,44,false,true,0,0,11,123,3,662.2,47716,8136412,120307,110,3.8800856,true,0
+a2,memory-on,1,claude-sonnet-5,medium,true,43,44,false,true,0,0,14,155,5,725.3,48649,10059059,128034,134,4.5164007,true,7259
+a3,memory-off,1,claude-sonnet-5,medium,true,23,27,false,false,1,0,6,8,6,567.4,42896,7258498,110872,109,3.4875914,false,0
+a3,memory-on,1,claude-sonnet-5,medium,true,23,27,false,true,0,0,4,8,4,547.4,39197,4848784,104859,75,2.6721942,false,7259
+a4,memory-off,1,claude-sonnet-5,medium,true,3,5,false,true,0,0,1,80,0,204.4,12684,1455581,56299,36,0.9658073,false,0
+a4,memory-on,1,claude-sonnet-5,medium,true,3,5,false,true,0,0,1,83,0,198.5,11383,1127782,54580,30,0.8367336,false,7259
+a5,memory-off,1,claude-sonnet-5,medium,true,5,5,true,true,0,0,6,39,12,156.7,12439,1611694,52117,45,0.9838842,true,0
+a5,memory-on,1,claude-sonnet-5,medium,true,5,5,true,true,0,0,7,43,10,151.0,11193,1649772,49234,45,0.9584946,true,7259
+a6,memory-off,1,claude-sonnet-5,medium,true,3,9,false,true,0,0,19,508,13,780.1,66646,16810081,187832,164,7.1715173,true,0
+a6,memory-on,1,claude-sonnet-5,medium,true,1,9,false,false,32,10,13,191,4,599.5,41359,7831390,117856,104,3.6775620,true,7259
