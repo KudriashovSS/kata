@@ -373,12 +373,20 @@ def run_agent(kind: str, cfg, wt: Path, task: Task, clone: Path,
                 "usage": {}, "usage_parsed": True}
 
     model = cfg["agent"].get("model", "").strip()
-    if (not model or model.startswith("REPLACE_")
-            or not re.fullmatch(r"claude-[a-z0-9-]+-\d{8}", model)):
+    if (not model or model in {"sonnet", "opus", "haiku"}
+            or not re.fullmatch(
+                r"claude-(?:sonnet|opus|haiku|fable|mythos)-\d+(?:-\d+)*(?:-\d{8})?",
+                model,
+            )):
         return {"kind": kind, "rc": 2, "wall_sec": time.time() - t0,
                 "usage": {}, "usage_parsed": False,
-                "error": "agent.model должен быть полным неизменяемым Claude id с датой YYYYMMDD"}
-    cmd = [c.replace("{prompt}", prompt).replace("{model}", model)
+                "error": "agent.model должен быть полным pinned Claude API id"}
+    effort = cfg["agent"].get("effort", "").strip()
+    if effort not in {"low", "medium", "high", "xhigh", "max"}:
+        return {"kind": kind, "rc": 2, "wall_sec": time.time() - t0,
+                "usage": {}, "usage_parsed": False,
+                "error": "agent.effort должен быть low/medium/high/xhigh/max"}
+    cmd = [c.replace("{prompt}", prompt).replace("{model}", model).replace("{effort}", effort)
            for c in cfg["agent"]["cmd"]]
     _, cli_version, _ = sh([cmd[0], "--version"], cwd=wt, env=env_extra, timeout=30)
     rc, out, err = sh(cmd, cwd=wt, env=env_extra, timeout=cfg["agent"].get("timeout_sec", 3600))
@@ -403,7 +411,7 @@ def run_agent(kind: str, cfg, wt: Path, task: Task, clone: Path,
               file=sys.stderr)
 
     return {"kind": kind, "rc": rc, "wall_sec": time.time() - t0,
-            "model": model, "cli_version": cli_version.strip(),
+            "model": model, "effort": effort, "cli_version": cli_version.strip(),
             "usage": usage, "usage_parsed": parsed}
 
 
@@ -576,6 +584,7 @@ def main() -> int:
             "agent": agent["kind"],
             "agent_rc": agent["rc"],
             "agent_model": agent.get("model", cfg["agent"].get("model")),
+            "agent_effort": agent.get("effort", cfg["agent"].get("effort")),
             "agent_cli_version": agent.get("cli_version"),
             "agent_cmd": cfg["agent"].get("cmd") if kind not in ("null", "oracle") else None,
             "memory_mode": cfg["memory"]["mode"],

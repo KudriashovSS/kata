@@ -25,16 +25,17 @@ test_timeout_sec = 1800
 #   oracle — накатывает исходники эталонного PR (без тестов): ОБЯЗАНЫ пройти
 # Эти два прогоняются первыми и проверяют не модель, а сам каркас.
 kind = "claude"
-# Только полный неизменяемый model id с датой, например claude-…-YYYYMMDD.
-# Алиасы sonnet/opus/haiku запрещены раннером:
-# их смысл меняется со временем и ломает воспроизводимость/cutoff эксперимента.
-model = "REPLACE_WITH_EXACT_MODEL_ID"
+# Полный pinned model id, не короткий алиас sonnet/opus/haiku. Начиная с
+# поколения 4.6 dateless API ids тоже являются неизменяемыми snapshots.
+model = "claude-sonnet-5"
+effort = "medium"
 # Под -p спросить о правах не у кого: dontAsk жёстко отклоняет всё, что не
 # разрешено ниже. --tools убирает из контекста агента Web/MCP/subagent-инструменты,
 # а project settings добавляют OS sandbox вокруг Bash-процессов.
 cmd = [
   "claude", "-p", "{prompt}",
   "--model", "{model}",
+  "--effort", "{effort}",
   "--output-format", "json",
   "--permission-mode", "dontAsk",
   "--tools", "Read,Glob,Grep,Edit,Write,Bash",

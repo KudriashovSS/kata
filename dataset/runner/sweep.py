@@ -65,7 +65,7 @@ def collect(out_dir: Path, expected: set[tuple[str, str, int]] | None = None) ->
 
 
 def write_table(rows: list[dict], out_dir: Path) -> None:
-    cols = ["task", "mode", "seed", "agent", "agent_model", "valid_run",
+    cols = ["task", "mode", "seed", "agent", "agent_model", "agent_effort", "valid_run",
             "invalid_reasons", "task_success", "score", "score_binary", "agent_rc",
             "hidden_failed", "regression_green",
             "files_changed", "wall_sec", "input_tokens", "output_tokens",
@@ -80,6 +80,7 @@ def write_table(rows: list[dict], out_dir: Path) -> None:
             w.writerow({
                 "task": r["task"], "mode": r["mode"], "seed": r["seed"], "agent": r["agent"],
                 "agent_model": r.get("agent_model"),
+                "agent_effort": r.get("agent_effort"),
                 "valid_run": r.get("valid_run"),
                 "invalid_reasons": ";".join(r.get("invalid_reasons") or []),
                 "task_success": r.get("task_success"),
