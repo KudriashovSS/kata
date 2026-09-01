@@ -11,7 +11,7 @@
     # одна задача, быстро
     python dataset/runner/sweep.py --tasks a3 --seeds 1
 
-Порядок режимов чередуется между задачами — этого требует протокол эвала,
+Порядок режимов чередуется между сидами и задачами — этого требует протокол эвала,
 иначе систематический эффект «второй прогон всегда теплее» ляжет на один режим.
 """
 
@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import itertools
 import json
 import subprocess
 import sys
@@ -46,8 +45,8 @@ def one(task: str, mode: str, seed: int, extra: list[str], out: str = "runs") ->
     return subprocess.run(cmd, cwd=ROOT).returncode
 
 
-def collect(out_dir: Path) -> list[dict]:
-    """Только настоящие прогоны.
+def collect(out_dir: Path, expected: set[tuple[str, str, int]] | None = None) -> list[dict]:
+    """Только настоящие прогоны текущей матрицы.
 
     Псевдоагенты null и oracle живут в отдельном каталоге, но фильтр по полю
     agent оставлен на случай ручных запусков: одна забытая oracle-строка
@@ -58,19 +57,19 @@ def collect(out_dir: Path) -> list[dict]:
         r = json.loads(m.read_text(encoding="utf-8"))
         if r.get("agent") in ("null", "oracle"):
             continue
-        if r.get("memory_ok") is False:
-            print(f"[сводка] пропускаю невалидный прогон {r['task']}/{r['mode']}/seed{r['seed']}: "
-                  "память не приехала в контекст")
+        key = (r["task"], r["mode"], r["seed"])
+        if expected is not None and key not in expected:
             continue
         rows.append(r)
     return rows
 
 
 def write_table(rows: list[dict], out_dir: Path) -> None:
-    cols = ["task", "mode", "seed", "agent", "score", "score_binary", "agent_rc",
+    cols = ["task", "mode", "seed", "agent", "agent_model", "valid_run",
+            "invalid_reasons", "task_success", "score", "score_binary", "agent_rc",
             "hidden_failed", "regression_green",
             "files_changed", "wall_sec", "input_tokens", "output_tokens",
-            "cache_read_tokens", "total_cost_usd", "num_turns",
+            "cache_read_tokens", "cache_creation_tokens", "total_cost_usd", "num_turns",
             "agent_touched_tests", "context_chars"]
     csv_path = out_dir / "results.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as f:
@@ -80,6 +79,10 @@ def write_table(rows: list[dict], out_dir: Path) -> None:
             u = r.get("usage") or {}
             w.writerow({
                 "task": r["task"], "mode": r["mode"], "seed": r["seed"], "agent": r["agent"],
+                "agent_model": r.get("agent_model"),
+                "valid_run": r.get("valid_run"),
+                "invalid_reasons": ";".join(r.get("invalid_reasons") or []),
+                "task_success": r.get("task_success"),
                 "score": r["score"],
                 "score_binary": r.get("score_binary"),
                 "agent_rc": r.get("agent_rc"),
@@ -90,6 +93,7 @@ def write_table(rows: list[dict], out_dir: Path) -> None:
                 "input_tokens": u.get("input_tokens"),
                 "output_tokens": u.get("output_tokens"),
                 "cache_read_tokens": u.get("cache_read_tokens"),
+                "cache_creation_tokens": u.get("cache_creation_tokens"),
                 "total_cost_usd": u.get("total_cost_usd"),
                 "num_turns": u.get("num_turns"),
                 "agent_touched_tests": r["diff"]["agent_touched_tests"],
@@ -97,25 +101,28 @@ def write_table(rows: list[dict], out_dir: Path) -> None:
             })
     print(f"\n[таблица] {csv_path}")
 
-    # сводка off vs on: доля зелёных и медианная цена
-    print(f"\n{'задача':6} {'режим':12} {'зелёных':>8} {'ср. токенов вход':>18} {'ср. сек':>9}")
+    # Невалидные строки остаются в CSV для разбора, но в сравнительную сводку не входят.
+    print(f"\n{'задача':6} {'режим':12} {'успех':>8} {'валидно':>8} "
+          f"{'ср. токенов вход':>18} {'ср. сек':>9}")
     for task in sorted({r["task"] for r in rows}):
         for mode in MODES:
             sel = [r for r in rows if r["task"] == task and r["mode"] == mode]
             if not sel:
                 continue
-            green = sum(1 for r in sel if r["score"] == 1.0)
-            toks = [(r.get("usage") or {}).get("input_tokens") for r in sel]
+            valid = [r for r in sel if r.get("valid_run")]
+            success = sum(1 for r in valid if r.get("task_success"))
+            toks = [(r.get("usage") or {}).get("input_tokens") for r in valid]
             toks = [t for t in toks if t]
-            secs = [r["wall_sec"] for r in sel]
-            print(f"{task:6} {mode:12} {green}/{len(sel):>6} "
+            secs = [r["wall_sec"] for r in valid]
+            print(f"{task:6} {mode:12} {success}/{len(valid):>6} {len(valid)}/{len(sel):>6} "
                   f"{(sum(toks)//len(toks) if toks else 0):>18} "
-                  f"{(sum(secs)/len(secs)):>9.0f}")
+                  f"{(sum(secs)/len(secs) if secs else 0):>9.0f}")
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--tasks-file", default="dataset/tasks.yaml")
+    ap.add_argument("--config", default="dataset/runner/config.toml")
     ap.add_argument("--tasks", nargs="*", help="подмножество id задач")
     ap.add_argument("--seeds", type=int, default=3)
     ap.add_argument("--out", default="runs")
@@ -125,7 +132,9 @@ def main() -> int:
     args = ap.parse_args()
 
     ids = args.tasks or task_ids(ROOT / args.tasks_file)
-    extra = ["--skip-setup"] if args.skip_setup else []
+    extra = ["--config", args.config]
+    if args.skip_setup:
+        extra.append("--skip-setup")
 
     if args.selftest:
         # Обязательный ритуал перед каждым новым набором задач.
@@ -138,9 +147,13 @@ def main() -> int:
                 out = f"{args.out}/_selftest/{kind}"
                 one(task, "memory-off", 0, extra + ["--agent", kind], out=out)
                 m = ROOT / out / task / "memory-off" / "seed0" / "metrics.json"
-                green = json.loads(m.read_text())["hidden"]["green"] if m.exists() else None
-                ok = (green is must_be_green)
+                metrics = json.loads(m.read_text()) if m.exists() else {}
+                green = metrics.get("hidden", {}).get("green")
+                regression_green = metrics.get("regression", {}).get("green")
+                valid = metrics.get("valid_run")
+                ok = (green is must_be_green) and regression_green is True and valid is True
                 print(f"[selftest] {task} {kind}: скрытые {'зелёные' if green else 'красные'} "
+                      f"регрессия {'зелёная' if regression_green else 'красная'} "
                       f"-> {'ok' if ok else 'ПРОБЛЕМА'}")
                 if not ok:
                     bad.append(f"{task}/{kind}")
@@ -150,12 +163,26 @@ def main() -> int:
         print("\n[selftest] каркас меряет то, что должен")
         return 0
 
+    expected = {(task, mode, seed) for task in ids for mode in MODES
+                for seed in range(1, args.seeds + 1)}
+    failed_commands = []
     for i, task in enumerate(ids):
-        modes = MODES if i % 2 == 0 else list(reversed(MODES))   # чередуем порядок
-        for seed, mode in itertools.product(range(1, args.seeds + 1), modes):
-            one(task, mode, seed, extra, out=args.out)
+        for seed in range(1, args.seeds + 1):
+            # Балансируем порядок внутри одной задачи, а не только между задачами.
+            modes = MODES if (i + seed) % 2 else list(reversed(MODES))
+            for mode in modes:
+                if one(task, mode, seed, extra, out=args.out) != 0:
+                    failed_commands.append((task, mode, seed))
 
-    write_table(collect(ROOT / args.out), ROOT / args.out)
+    rows = collect(ROOT / args.out, expected)
+    write_table(rows, ROOT / args.out)
+    seen = {(r["task"], r["mode"], r["seed"]) for r in rows}
+    missing = sorted(expected - seen)
+    invalid = sorted((r["task"], r["mode"], r["seed"])
+                     for r in rows if not r.get("valid_run"))
+    if failed_commands or missing or invalid:
+        print(f"\n[матрица] НЕПОЛНА: commands={failed_commands}, missing={missing}, invalid={invalid}")
+        return 2
     return 0
 
 
