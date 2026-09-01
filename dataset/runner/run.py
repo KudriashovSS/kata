@@ -6,7 +6,7 @@
 
 Что делает по шагам:
   1. валидирует задачу (пути скрытых тестов реально есть в эталонном коммите);
-  2. готовит изолированный git worktree на base_commit задачи;
+  2. материализует base_commit в свежий однокоммитный git repo без будущей истории;
   3. убирает чужие агентские файлы (AGENTS.md / CLAUDE.md) — в ОБОИХ режимах,
      иначе в memory-off приезжает чужая память, а в memory-on — две сразу;
   4. в memory-on кладёт .claude/settings.json с хуками и проверяет, что память
@@ -14,7 +14,7 @@
   5. запускает агента;
   6. снимает дифф, гоняет регрессию (скрытые тесты из неё исключены);
   7. накладывает скрытые тесты из эталонного коммита и гоняет их;
-  8. пишет metrics.json + артефакты и убирает за собой worktree.
+  8. пишет metrics.json + артефакты и убирает за собой workspace.
 
 Скрытые тесты не «прячутся» — на base_commit их в новой редакции ещё нет.
 Мы накладываем их поверх дерева агента после прогона.
@@ -25,9 +25,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
+import signal
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import tomllib
 import xml.etree.ElementTree as ET
@@ -52,25 +55,36 @@ RC_TIMEOUT = -9
 
 
 def sh(cmd, cwd=None, env=None, timeout=None, check=False):
-    """Запуск команды. Таймаут не роняет прогон: rc=-9, частичные метрики сохраняются."""
+    """Запуск команды. При таймауте убивает всю process group, но сохраняет частичный вывод."""
+    p = subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        env={**os.environ, **(env or {})},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        shell=isinstance(cmd, str),
+        start_new_session=True,
+    )
     try:
-        p = subprocess.run(
-            cmd,
-            cwd=cwd,
-            env={**os.environ, **(env or {})},
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            shell=isinstance(cmd, str),
-            start_new_session=True,   # чтобы можно было убить всю группу
-        )
-    except subprocess.TimeoutExpired as e:
-        out = (e.stdout or b"").decode(errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
-        err = (e.stderr or b"").decode(errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or "")
+        out, err = p.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(p.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            out, err = p.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(p.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            out, err = p.communicate()
         return RC_TIMEOUT, out, err + f"\n[kata] таймаут {timeout}s: {cmd}"
     if check and p.returncode != 0:
-        raise RuntimeError(f"{cmd} -> rc={p.returncode}\n{p.stderr[-2000:]}")
-    return p.returncode, p.stdout, p.stderr
+        raise RuntimeError(f"{cmd} -> rc={p.returncode}\n{err[-2000:]}")
+    return p.returncode, out, err
 
 
 EMPTY_TESTS = {"rc": None, "parsed": False, "tests": 0, "passed": 0, "failed": 0,
@@ -110,7 +124,7 @@ def parse_junit(xml_path: Path, rc: int) -> dict:
         "skipped": skipped,
         # passed > 0 обязательно: иначе прогон, где всё скипнулось (нет LDAP-сервиса),
         # отчитается как зелёный при нуле пройденных проверок
-        "green": failures == 0 and errors == 0 and passed > 0,
+        "green": rc == 0 and failures == 0 and errors == 0 and passed > 0,
         "ratio": round(passed / ran, 3) if ran else 0.0,
         "failing": failing[:40],
     }
@@ -156,6 +170,12 @@ def validate_task(clone: Path, task: Task) -> list[str]:
         rc, _, _ = sh(["git", "cat-file", "-e", f"{sha}^{{commit}}"], cwd=clone)
         if rc != 0:
             problems.append(f"нет коммита {sha} в клоне")
+    rc_base, base, _ = sh(["git", "rev-parse", task.base_commit], cwd=clone)
+    rc_parent, parent, _ = sh(["git", "rev-parse", f"{task.solution_commit}^"], cwd=clone)
+    if rc_base == 0 and rc_parent == 0 and base.strip() != parent.strip():
+        problems.append(
+            f"base_commit {task.base_commit} не является родителем {task.solution_commit}"
+        )
     rc, out, _ = sh(["git", "ls-tree", "-r", "--name-only", task.solution_commit], cwd=clone)
     present = set(out.splitlines())
     for p in task.hidden_tests:
@@ -174,25 +194,43 @@ def ensure_clone(cfg) -> Path:
         print(f"[workspace] клонирую {cfg['repo']['url']} -> {clone}")
         sh(["git", "clone", cfg["repo"]["url"], str(clone)], check=True)
     else:
-        sh(["git", "fetch", "--quiet", "--all"], cwd=clone)
+        sh(["git", "fetch", "--quiet", "--all"], cwd=clone, check=True)
     return clone
 
 
-def make_worktree(clone: Path, base_commit: str, dest: Path) -> Path:
-    sh(["git", "worktree", "prune"], cwd=clone)
+def extract_from_reference(clone: Path, commit: str, dest: Path,
+                           paths: list[str] | None = None) -> None:
+    """Материализует дерево/пути из reference clone, не связывая его историю с workspace."""
+    archive = dest.parent / f".{dest.name}-{commit[:9]}.tar"
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        cmd = ["git", "archive", "--format=tar", f"--output={archive}", commit]
+        if paths:
+            cmd.extend(paths)
+        sh(cmd, cwd=clone, check=True)
+        dest.mkdir(parents=True, exist_ok=True)
+        sh(["tar", "-xf", str(archive), "-C", str(dest)], check=True)
+    finally:
+        archive.unlink(missing_ok=True)
+
+
+def make_workspace(clone: Path, base_commit: str, dest: Path,
+                   strip_files: list[str]) -> tuple[Path, list[str]]:
+    """Свежий однокоммитный repo: будущих коммитов Mealie агент физически не видит."""
     if dest.exists():
-        sh(["git", "worktree", "remove", "--force", str(dest)], cwd=clone)
-        shutil.rmtree(dest, ignore_errors=True)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    sh(["git", "worktree", "add", "--detach", "--force", str(dest), base_commit],
-       cwd=clone, check=True)
-    return dest
+        shutil.rmtree(dest)
+    extract_from_reference(clone, base_commit, dest)
+    removed = strip_foreign_memory(dest, strip_files)
+    sh(["git", "init", "-q"], cwd=dest, check=True)
+    sh(["git", "config", "user.name", "kata-eval"], cwd=dest, check=True)
+    sh(["git", "config", "user.email", "kata-eval@localhost"], cwd=dest, check=True)
+    sh(["git", "add", "-A"], cwd=dest, check=True)
+    sh(["git", "commit", "-q", "-m", f"eval base {base_commit}"], cwd=dest, check=True)
+    return dest, removed
 
 
-def drop_worktree(clone: Path, dest: Path) -> None:
-    sh(["git", "worktree", "remove", "--force", str(dest)], cwd=clone)
+def drop_workspace(dest: Path) -> None:
     shutil.rmtree(dest, ignore_errors=True)
-    sh(["git", "worktree", "prune"], cwd=clone)
 
 
 def strip_foreign_memory(wt: Path, names: list[str]) -> list[str]:
@@ -210,21 +248,70 @@ def strip_foreign_memory(wt: Path, names: list[str]) -> list[str]:
     return removed
 
 
-def install_hooks(wt: Path, write_back: bool) -> None:
+def install_agent_settings(wt: Path, memory_on: bool, write_back: bool) -> None:
     """
-    memory-on: SessionStart читает память.
+    В обоих режимах ставит одинаковую OS-песочницу. В memory-on дополнительно
+    ставит SessionStart, который читает локальную копию снапшота.
 
     Stop-хук (шаг актуализации памяти) ставим ТОЛЬКО когда памяти реально есть
     куда писать. Иначе он гарантированно добавляет memory-on лишний ход и лишние
     токены — то есть портит ровно ту метрику, ради которой всё затевалось.
     """
-    settings = json.loads((HOOKS_DIR / "settings.memory-on.json").read_text(encoding="utf-8"))
-    if not write_back:
-        settings["hooks"].pop("Stop", None)
+    settings = {}
+    if memory_on:
+        settings = json.loads((HOOKS_DIR / "settings.memory-on.json").read_text(encoding="utf-8"))
+        if not write_back:
+            settings["hooks"].pop("Stop", None)
+    settings["sandbox"] = {
+        "enabled": True,
+        "failIfUnavailable": True,
+        "allowUnsandboxedCommands": False,
+        # Reference clone, dataset and credentials live under home; subprocesses
+        # may read only the temporary project workspace.
+        "filesystem": {"denyRead": ["~/"], "allowRead": ["."]},
+    }
     claude_dir = wt / ".claude"
     claude_dir.mkdir(exist_ok=True)
     (claude_dir / "settings.json").write_text(
         json.dumps(settings, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def install_agent_runtime(wt: Path, cfg, memory_on: bool) -> dict[str, str]:
+    """Копирует минимальный runtime внутрь sandbox и возвращает его env."""
+    bin_dir = wt / ".kata-bin"
+    bin_dir.mkdir(exist_ok=True)
+    uv = shutil.which("uv")
+    if not uv:
+        raise RuntimeError("uv не найден в PATH")
+    shutil.copy2(uv, bin_dir / "uv")
+
+    env = {
+        **cfg["repo"].get("env", {}),
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+        "UV_CACHE_DIR": str(wt / ".uv-cache"),
+    }
+    if memory_on:
+        local_hooks = wt / ".kata-hooks"
+        shutil.copytree(HOOKS_DIR, local_hooks)
+        env["KATA_HOOKS_DIR"] = str(local_hooks)
+        env["KATA_RUN_DIR"] = str(wt / ".kata-run")
+        env["KATA_MEMORY_MODE"] = cfg["memory"]["mode"]
+        if cfg["memory"]["mode"] == "snapshot":
+            snapshot = (ROOT / cfg["memory"]["snapshot"]).resolve()
+            local_snapshot = local_hooks / "snapshot-c0.md"
+            shutil.copy2(snapshot, local_snapshot)
+            env["KATA_FACTS_SNAPSHOT"] = str(local_snapshot)
+        env["KATA_XMEM_INSTANCE"] = cfg["memory"].get("xmem_instance", "")
+    return env
+
+
+def collect_hook_artifacts(wt: Path, run_dir: Path) -> None:
+    source = wt / ".kata-run"
+    if not source.exists():
+        return
+    for path in source.iterdir():
+        if path.is_file():
+            shutil.copy2(path, run_dir / path.name)
 
 
 # --------------------------------------------------------------------------- агент
@@ -276,12 +363,32 @@ def run_agent(kind: str, cfg, wt: Path, task: Task, clone: Path,
             return {"kind": kind, "rc": 1, "wall_sec": time.time() - t0,
                     "usage": {}, "usage_parsed": True,
                     "error": "не удалось получить список исходников эталонного коммита"}
-        rc, out, err = sh(["git", "checkout", task.solution_commit, "--", *paths], cwd=wt)
+        try:
+            extract_from_reference(clone, task.solution_commit, wt, paths)
+            rc, err = 0, ""
+        except RuntimeError as e:
+            rc, err = 1, str(e)
         (run_dir / "agent_stderr.log").write_text(err, encoding="utf-8")
         return {"kind": kind, "rc": rc, "wall_sec": time.time() - t0,
                 "usage": {}, "usage_parsed": True}
 
-    cmd = [c.replace("{prompt}", prompt) for c in cfg["agent"]["cmd"]]
+    model = cfg["agent"].get("model", "").strip()
+    if (not model or model in {"sonnet", "opus", "haiku"}
+            or not re.fullmatch(
+                r"claude-(?:sonnet|opus|haiku|fable|mythos)-\d+(?:-\d+)*(?:-\d{8})?",
+                model,
+            )):
+        return {"kind": kind, "rc": 2, "wall_sec": time.time() - t0,
+                "usage": {}, "usage_parsed": False,
+                "error": "agent.model должен быть полным pinned Claude API id"}
+    effort = cfg["agent"].get("effort", "").strip()
+    if effort not in {"low", "medium", "high", "xhigh", "max"}:
+        return {"kind": kind, "rc": 2, "wall_sec": time.time() - t0,
+                "usage": {}, "usage_parsed": False,
+                "error": "agent.effort должен быть low/medium/high/xhigh/max"}
+    cmd = [c.replace("{prompt}", prompt).replace("{model}", model).replace("{effort}", effort)
+           for c in cfg["agent"]["cmd"]]
+    _, cli_version, _ = sh([cmd[0], "--version"], cwd=wt, env=env_extra, timeout=30)
     rc, out, err = sh(cmd, cwd=wt, env=env_extra, timeout=cfg["agent"].get("timeout_sec", 3600))
     (run_dir / "agent_stdout.log").write_text(out, encoding="utf-8")
     (run_dir / "agent_stderr.log").write_text(err, encoding="utf-8")
@@ -294,6 +401,7 @@ def run_agent(kind: str, cfg, wt: Path, task: Task, clone: Path,
             "input_tokens": u.get("input_tokens"),
             "output_tokens": u.get("output_tokens"),
             "cache_read_tokens": u.get("cache_read_input_tokens"),
+            "cache_creation_tokens": u.get("cache_creation_input_tokens"),
             "total_cost_usd": payload.get("total_cost_usd"),
             "num_turns": payload.get("num_turns"),
         }
@@ -303,6 +411,7 @@ def run_agent(kind: str, cfg, wt: Path, task: Task, clone: Path,
               file=sys.stderr)
 
     return {"kind": kind, "rc": rc, "wall_sec": time.time() - t0,
+            "model": model, "effort": effort, "cli_version": cli_version.strip(),
             "usage": usage, "usage_parsed": parsed}
 
 
@@ -317,7 +426,9 @@ def capture_diff(wt: Path, run_dir: Path, exclude: list[str] | None = None) -> d
       * удалённые AGENTS.md / CLAUDE.md — иначе прогон, где агент не сделал ничего,
         отчитывается как «-238 строк».
     """
-    specs = ["." , ":(exclude).claude"] + [f":(exclude){p}" for p in (exclude or [])]
+    specs = [".", ":(exclude).claude", ":(exclude).kata-bin",
+             ":(exclude).kata-hooks", ":(exclude).kata-run", ":(exclude).uv-cache"]
+    specs += [f":(exclude){p}" for p in (exclude or [])]
     sh(["git", "add", "-A", "--", *specs], cwd=wt)
     _, diff, _ = sh(["git", "diff", "--cached"], cwd=wt)
     (run_dir / "diff.patch").write_text(diff, encoding="utf-8")
@@ -346,8 +457,8 @@ def run_tests(wt: Path, cfg, targets: list[str], run_dir: Path, label: str,
     return parse_junit(xml, rc)
 
 
-def overlay_hidden_tests(wt: Path, task: Task) -> None:
-    sh(["git", "checkout", task.solution_commit, "--", *task.hidden_tests], cwd=wt, check=True)
+def overlay_hidden_tests(clone: Path, wt: Path, task: Task) -> None:
+    extract_from_reference(clone, task.solution_commit, wt, task.hidden_tests)
 
 
 # --------------------------------------------------------------------------- прогон
@@ -389,14 +500,17 @@ def main() -> int:
         print("[валидация] задача не готова к прогону, токены не тратим", file=sys.stderr)
         return 3
 
-    wt = make_worktree(clone, task.base_commit,
-                       ROOT / args.out / "_wt" / f"{task.id}-{args.mode}-{args.seed}")
+    workspace_root = Path(tempfile.gettempdir()) / "kata-eval-workspaces"
+    wt, removed = make_workspace(
+        clone,
+        task.base_commit,
+        workspace_root / f"{task.id}-{args.mode}-{args.seed}",
+        cfg["repo"].get("strip_files", []),
+    )
     try:
-        removed = strip_foreign_memory(wt, cfg["repo"].get("strip_files", []))
         print(f"[workspace] {task.id} @ {task.base_commit}, убрано: {removed or '—'}")
 
-        if args.mode == "memory-on":
-            install_hooks(wt, write_back)
+        install_agent_settings(wt, args.mode == "memory-on", write_back)
 
         if not args.skip_setup:
             rc, out, err = sh(cfg["repo"]["setup_cmd"], cwd=wt,
@@ -406,20 +520,19 @@ def main() -> int:
                 print("[setup] упал, дальше идти бессмысленно", file=sys.stderr)
                 return 2
 
-        env_extra = {
-            **cfg["repo"].get("env", {}),
-            "KATA_HOOKS_DIR": str(HOOKS_DIR),
-            "KATA_RUN_DIR": str(run_dir),
-            "KATA_MEMORY_MODE": cfg["memory"]["mode"],
-            "KATA_FACTS_SNAPSHOT": str((ROOT / cfg["memory"]["snapshot"]).resolve()),
-            "KATA_XMEM_INSTANCE": cfg["memory"].get("xmem_instance", ""),
-            "KATA_TASK_ID": task.id,
-            "KATA_SEED": str(args.seed),
-        }
+        # Runtime копируется в workspace: subprocess sandbox не получает доступ
+        # к reference clone, датасету и снапшоту на хосте.
+        env_extra = install_agent_runtime(wt, cfg, args.mode == "memory-on")
+        if args.mode == "memory-on":
+            env_extra.update({
+                "KATA_TASK_ID": task.id,
+                "KATA_SEED": str(args.seed),
+            })
 
         print(f"[agent] {kind}, режим {args.mode}, сид {args.seed}"
               + (", запись памяти включена" if args.mode == "memory-on" and write_back else ""))
         agent = run_agent(kind, cfg, wt, task, clone, run_dir, env_extra)
+        collect_hook_artifacts(wt, run_dir)
         if agent["rc"] not in (0, None):
             print(f"[agent] rc={agent['rc']} — прогон пойдёт дальше, но смотри логи",
                   file=sys.stderr)
@@ -444,8 +557,24 @@ def main() -> int:
         regression = run_tests(wt, cfg, [cfg["repo"]["regression_scope"]], run_dir,
                                "regression", ignore=task.hidden_tests)
 
-        overlay_hidden_tests(wt, task)
+        overlay_hidden_tests(clone, wt, task)
         hidden = run_tests(wt, cfg, task.hidden_tests, run_dir, "hidden")
+
+        invalid_reasons = []
+        if agent["rc"] != 0:
+            invalid_reasons.append(f"agent_rc={agent['rc']}")
+        if kind not in ("null", "oracle") and not agent["usage_parsed"]:
+            invalid_reasons.append("usage_unparsed")
+        if kind not in ("null", "oracle") and not agent.get("cli_version"):
+            invalid_reasons.append("agent_cli_version_missing")
+        if not memory_ok:
+            invalid_reasons.append("memory_not_injected")
+        if not regression["parsed"]:
+            invalid_reasons.append("regression_junit_missing")
+        if not hidden["parsed"]:
+            invalid_reasons.append("hidden_junit_missing")
+        valid_run = not invalid_reasons
+        task_success = valid_run and regression["green"] and hidden["green"]
 
         metrics = {
             "task": task.id,
@@ -454,6 +583,9 @@ def main() -> int:
             "seed": args.seed,
             "agent": agent["kind"],
             "agent_rc": agent["rc"],
+            "agent_model": agent.get("model", cfg["agent"].get("model")),
+            "agent_effort": agent.get("effort", cfg["agent"].get("effort")),
+            "agent_cli_version": agent.get("cli_version"),
             "agent_cmd": cfg["agent"].get("cmd") if kind not in ("null", "oracle") else None,
             "memory_mode": cfg["memory"]["mode"],
             "memory_write_back": write_back,
@@ -465,6 +597,9 @@ def main() -> int:
             "wall_sec": round(agent["wall_sec"], 1),
             "usage": agent["usage"],
             "usage_parsed": agent["usage_parsed"],
+            "valid_run": valid_run,
+            "invalid_reasons": invalid_reasons,
+            "task_success": task_success,
             "diff": diff,
             "regression": regression,
             "hidden": hidden,
@@ -481,10 +616,10 @@ def main() -> int:
               f"= {hidden['ratio']}), регрессия: {'ok' if regression['green'] else 'красная'}"
               + ("" if memory_ok else ", ПАМЯТЬ НЕ ПРИЕХАЛА"))
         print(f"[итог] артефакты в {run_dir}")
-        return 0
+        return 0 if valid_run else 4
     finally:
         if not args.keep_worktree:
-            drop_worktree(clone, wt)
+            drop_workspace(wt)
 
 
 if __name__ == "__main__":

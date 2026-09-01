@@ -3,7 +3,7 @@
 
 [repo]
 url = "https://github.com/mealie-recipes/mealie.git"
-clone = ".cache/mealie"                 # локальный клон, из него делаются worktree
+clone = ".cache/mealie"                 # reference clone; агент его историю не получает
 
 # mealie везёт собственные агентские файлы. Если их не убрать, memory-off
 # на самом деле «с чужой памятью» и вся дельта схлопнется.
@@ -25,15 +25,27 @@ test_timeout_sec = 1800
 #   oracle — накатывает исходники эталонного PR (без тестов): ОБЯЗАНЫ пройти
 # Эти два прогоняются первыми и проверяют не модель, а сам каркас.
 kind = "claude"
-# acceptEdits разрешает правки файлов и простые файловые команды, но НЕ произвольный
-# Bash — а под -p спросить не у кого. Права из .claude/settings.json в свежем
-# (недоверенном) worktree под -p не применяются, поэтому список инструментов
-# задаём флагом CLI, а не файлом.
+# Полный pinned model id, не короткий алиас sonnet/opus/haiku. Начиная с
+# поколения 4.6 dateless API ids тоже являются неизменяемыми snapshots.
+model = "claude-sonnet-5"
+effort = "medium"
+# Под -p спросить о правах не у кого: dontAsk жёстко отклоняет всё, что не
+# разрешено ниже. --tools убирает из контекста агента Web/MCP/subagent-инструменты,
+# а project settings добавляют OS sandbox вокруг Bash-процессов.
 cmd = [
   "claude", "-p", "{prompt}",
+  "--model", "{model}",
+  "--effort", "{effort}",
   "--output-format", "json",
-  "--permission-mode", "acceptEdits",
-  "--allowedTools", "Read,Glob,Grep,Edit,Write,Bash(uv run:*),Bash(git:*)",
+  "--permission-mode", "dontAsk",
+  "--tools", "Read,Glob,Grep,Edit,Write,Bash",
+  "--allowedTools", "Read(./**),Glob,Grep,Edit(./**),Write(./**),Bash(uv run pytest *),Bash(git status *),Bash(git diff *)",
+  "--setting-sources", "project",
+  "--strict-mcp-config",
+  "--mcp-config", '{"mcpServers":{}}',
+  "--disable-slash-commands",
+  "--no-session-persistence",
+  "--no-chrome",
 ]
 timeout_sec = 3600
 
@@ -42,7 +54,7 @@ timeout_sec = 3600
 # xmemcli  — ходим в память по-настоящему (для демо и этапа 2)
 mode = "snapshot"
 snapshot = "dataset/facts/snapshot-c0.md"
-xmem_instance = ""
+xmem_instance = "5f1dea7e-4daa-45f7-b667-758f4b33b960"
 
 # Шаг актуализации памяти (Stop-хук). На этапе 1 держим выключенным:
 # он добавляет memory-on лишний ход и лишние токены, то есть портит ровно ту
