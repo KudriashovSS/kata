@@ -29,8 +29,14 @@ case "${KATA_MEMORY_MODE:-snapshot}" in
     fi
     ;;
   xmemcli)
-    OUT="$(xmemcli context --text --timeout 120 2>/dev/null)" || {
-      echo "kata: xmemcli context не отработал" >&2
+    # KATA_XMEM_CONTEXT_ARGS — место, куда можно добавить сужение запроса под задачу,
+    # не трогая хук. Пока пакет один и тот же на все задачи, сравнение с memory-off
+    # меряет объём контекста, а не пользу отбора: id задачи лежит в KATA_TASK_ID.
+    XMEM_ERR="${KATA_RUN_DIR:-/tmp}/xmemcli_stderr.log"
+    # shellcheck disable=SC2086
+    OUT="$(xmemcli context --text --timeout 120 ${KATA_XMEM_CONTEXT_ARGS:-} 2>"$XMEM_ERR")" || {
+      echo "kata: xmemcli context не отработал, причина в $XMEM_ERR:" >&2
+      tail -5 "$XMEM_ERR" >&2 || true
       exit 1
     }
     ;;
