@@ -1,0 +1,27 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$KATA_HOOKS_DIR/session_start.sh\"",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$KATA_HOOKS_DIR/stop.py\"",
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  }
+}
